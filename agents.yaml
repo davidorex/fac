@@ -1,0 +1,98 @@
+workspace: /Users/david/Projects/fac/factory
+
+agents:
+  researcher:
+    role: "Find elegant solutions. Evaluate options. Deliver decision-ready briefs."
+    model: claude-opus-4-6
+    provider: anthropic
+    skills:
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
+      available: [researcher/research-approach, researcher/source-evaluation, researcher/recommendation-format]
+    memory:
+      private: memory/researcher/MEMORY.md
+      daily: memory/daily/researcher/
+    can_read: [tasks/research/, memory/shared/, skills/shared/, skills/researcher/, learnings/, projects/, universe/]
+    can_write: [tasks/research-done/, memory/researcher/, memory/daily/researcher/, skills/proposed/]
+    cannot_access: [scenarios/, tasks/building/]
+    heartbeat: "0 9 * * *"  # daily at 9am
+    shell_access: read_only
+
+  spec:
+    role: "Turn fuzzy intent into precise NLSpecs. Ask the right questions."
+    model: claude-opus-4-6
+    provider: anthropic
+    skills:
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
+      available: [spec/nlspec-format, spec/domain-interview, spec/spec-patterns]
+    memory:
+      private: memory/spec/MEMORY.md
+      daily: memory/daily/spec/
+    can_read: [specs/, tasks/research-done/, memory/shared/, skills/shared/, skills/spec/, learnings/, universe/]
+    can_write: [specs/drafting/, specs/ready/, tasks/research/, memory/spec/, memory/daily/spec/, skills/proposed/]
+    cannot_access: [scenarios/, tasks/building/]
+    heartbeat: "0 8 * * *"  # daily at 8am
+    shell_access: none
+
+  builder:
+    role: "Implement specs as working code. Converge or stop and report."
+    model: claude-sonnet-4-5
+    provider: anthropic
+    skills:
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
+      available: [builder/implementation-approach, builder/convergence, builder/tool-use]
+    memory:
+      private: memory/builder/MEMORY.md
+      daily: memory/daily/builder/
+    can_read: [specs/ready/, tasks/research-done/, skills/shared/, skills/builder/, learnings/, projects/, universe/]
+    can_write: [tasks/building/, tasks/review/, tasks/research/, projects/, memory/builder/, memory/daily/builder/, skills/proposed/]
+    cannot_access: [scenarios/]
+    heartbeat: "*/30 * * * *"  # every 30 minutes when there's work
+    shell_access: full
+
+  verifier:
+    role: "Judge whether work satisfies the spec. Score satisfaction. Report failures."
+    model: claude-opus-4-6
+    provider: anthropic
+    skills:
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
+      available: [verifier/verification-protocol, verifier/satisfaction-scoring, verifier/scenario-evaluation, verifier/failure-reporting]
+    memory:
+      private: memory/verifier/MEMORY.md
+      daily: memory/daily/verifier/
+    can_read: [specs/ready/, tasks/review/, scenarios/, skills/shared/, skills/verifier/, projects/, universe/]
+    can_write: [tasks/verified/, tasks/failed/, tasks/research/, scenarios/*/satisfaction.md, memory/verifier/, memory/daily/verifier/, skills/proposed/]
+    cannot_access: [tasks/building/]
+    heartbeat: "*/15 * * * *"  # check for completed work every 15 minutes
+    shell_access: read_only
+
+  librarian:
+    role: "Curate knowledge. Review skills. Detect patterns. Keep memory clean."
+    model: claude-sonnet-4-5
+    provider: anthropic
+    skills:
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
+      available: [librarian/knowledge-curation, librarian/pattern-detection, librarian/memory-hygiene]
+    memory:
+      private: memory/librarian/MEMORY.md
+      daily: memory/daily/librarian/
+    can_read: [skills/, memory/, learnings/, universe/]
+    can_write: [skills/shared/, skills/proposed/, memory/shared/, memory/librarian/, memory/daily/librarian/, learnings/]
+    cannot_access: [scenarios/, tasks/building/]
+    heartbeat: "0 22 * * *"  # nightly review at 10pm
+    shell_access: none
+
+  operator:
+    role: "Keep the lights on. Git, CI, dependencies, deployments, monitoring."
+    model: claude-haiku-4-5
+    provider: anthropic
+    skills:
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
+      available: [operator/git-workflow, operator/ci-cd, operator/dependency-management, operator/monitoring]
+    memory:
+      private: memory/operator/MEMORY.md
+      daily: memory/daily/operator/
+    can_read: [projects/, tasks/maintenance/, skills/shared/, skills/operator/, memory/shared/, universe/]
+    can_write: [projects/, tasks/maintenance/, memory/operator/, memory/daily/operator/, skills/proposed/]
+    cannot_access: [scenarios/, tasks/building/, specs/drafting/]
+    heartbeat: "0 * * * *"  # hourly
+    shell_access: full
