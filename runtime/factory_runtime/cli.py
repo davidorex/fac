@@ -1108,6 +1108,45 @@ def init(workspace: str | None) -> None:
     console.print(f"[green]Workspace initialized at {ws}[/green]")
 
 
+@main.command(name="init-project")
+@click.option("--workspace", "-w", type=click.Path(), help="Factory workspace path (auto-detected if omitted)")
+def init_project(workspace: str | None) -> None:
+    """Register the current directory as a factory project.
+
+    Writes a .factory marker file pointing to the factory workspace.
+    After this, all factory commands work from within this directory.
+    """
+    project_dir = Path.cwd()
+    marker = project_dir / ".factory"
+
+    if marker.is_file():
+        existing = yaml.safe_load(marker.read_text()) or {}
+        console.print(f"Already registered. workspace: {existing.get('workspace')}")
+        return
+
+    # Resolve factory workspace
+    if workspace:
+        ws = Path(workspace).resolve()
+    else:
+        try:
+            ws = find_workspace()
+        except FileNotFoundError:
+            console.print(
+                "[red]Error:[/red] Cannot auto-detect factory workspace. "
+                "Pass --workspace or set FACTORY_WORKSPACE."
+            )
+            sys.exit(1)
+
+    if not (ws / "agents.yaml").exists():
+        console.print(f"[red]Error:[/red] No agents.yaml at {ws}")
+        sys.exit(1)
+
+    marker.write_text(yaml.dump({"workspace": str(ws)}, default_flow_style=False))
+    console.print(f"[green]Registered project:[/green] {project_dir.name}")
+    console.print(f"  workspace: {ws}")
+    console.print(f"  marker: {marker}")
+
+
 @main.command()
 @click.argument("agent")
 @click.argument("spec_name", required=False)
@@ -1343,9 +1382,15 @@ def status() -> None:
     else:
         next_block = "  [dim]Nothing to do.[/dim]"
 
+    # ── Project context ──
+    project_line = ""
+    if config.project_name:
+        project_line = f"\n[dim]  project: {config.project_name} ({config.project_dir})[/dim]\n"
+
     # ── Render ──
     output = Text.from_markup(
         f"{agent_block}\n"
+        f"{project_line}"
         f"\n[bold]Pipeline[/bold]\n"
         f"{pipeline_block}\n"
         f"\n[bold]Next[/bold]\n"

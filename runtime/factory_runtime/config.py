@@ -31,14 +31,43 @@ class AgentConfig:
 class FactoryConfig:
     workspace: Path
     agents: dict[str, AgentConfig] = field(default_factory=dict)
+    project_dir: Path | None = None   # set when invoked from a .factory project
+    project_name: str | None = None   # derived from project_dir basename
+
+
+def find_project_marker() -> tuple[Path, Path] | None:
+    """Walk upward from cwd looking for a .factory marker file.
+
+    Returns (project_dir, workspace_path) if found, None otherwise.
+    """
+    current = Path.cwd()
+    while current != current.parent:
+        marker = current / ".factory"
+        if marker.is_file():
+            raw = yaml.safe_load(marker.read_text()) or {}
+            ws = raw.get("workspace")
+            if ws:
+                ws_path = Path(ws)
+                if ws_path.is_absolute() and (ws_path / "agents.yaml").exists():
+                    return current, ws_path
+            return None  # marker exists but invalid
+        current = current.parent
+    return None
 
 
 def find_workspace() -> Path:
     """Find the factory workspace root.
 
-    Checks FACTORY_WORKSPACE env var first, then looks for agents.yaml
-    in the current directory and parent directories.
+    Resolution order:
+    1. .factory marker in cwd or parent (project context)
+    2. FACTORY_WORKSPACE env var
+    3. Walk up from cwd looking for agents.yaml (direct factory context)
     """
+    # Check for .factory project marker first
+    project = find_project_marker()
+    if project:
+        return project[1]
+
     env_path = os.environ.get("FACTORY_WORKSPACE")
     if env_path:
         p = Path(env_path)
@@ -56,7 +85,8 @@ def find_workspace() -> Path:
         current = current.parent
 
     raise FileNotFoundError(
-        "No agents.yaml found. Set FACTORY_WORKSPACE or run from within a factory workspace."
+        "No agents.yaml found. Run 'factory init-project' to register this directory, "
+        "set FACTORY_WORKSPACE, or run from within a factory workspace."
     )
 
 
@@ -78,6 +108,12 @@ def load_config(workspace: Path | None = None) -> FactoryConfig:
         ws_path = config_path.parent / ws_path
 
     config = FactoryConfig(workspace=ws_path)
+
+    # Populate project context if invoked from a .factory directory
+    project = find_project_marker()
+    if project:
+        config.project_dir = project[0]
+        config.project_name = project[0].name
 
     for name, agent_raw in raw.get("agents", {}).items():
         skills = agent_raw.get("skills", {})
