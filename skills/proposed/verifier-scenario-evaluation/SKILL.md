@@ -29,26 +29,12 @@ For each scenario file:
 
 ## When to Run vs. When to Trace
 
-**Run actually** when:
-- The scenario involves CLI invocation with specific inputs
-- The system has tests that cover the scenario's path
-- Running is safe (no side effects on external systems)
-
-**Trace mentally** when:
-- Running would require setting up external dependencies
-- The scenario tests an error path that is hard to trigger safely
-- The code is short enough to trace confidently
-
-Prefer running over tracing. Tracing introduces your own reasoning errors.
+**Run** when the scenario involves CLI invocation with specific inputs and is safe
+to execute. **Trace** when running requires external setup or tests an unsafe error
+path. Prefer running — tracing introduces your own reasoning errors.
 
 ## Recording Results
 
-Write scenario evaluation results to `scenarios/{project-name}/satisfaction.md`:
-
-```
-## Scenario: {filename}
-Result: PASS / PARTIAL / FAIL
-Evidence: {what you observed}
-```
-
-Aggregate scenario results factor into the satisfaction score.
+Write results to `scenarios/{project-name}/satisfaction.md` with one entry per
+scenario: scenario name, Result (PASS/PARTIAL/FAIL), and specific evidence observed.
+Aggregate results factor into the satisfaction score.

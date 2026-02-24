@@ -22,7 +22,6 @@ If both (1) and (2) are satisfied, **stop**. Do not add features the spec doesn'
 
 Track the number of times you have attempted to fix the same failing criterion.
 
-- After 1 iteration: continue normally
 - After 2 iterations: note the difficulty in your daily log, consider whether the spec is ambiguous
 - After 3 iterations on the same issue: **stop and write a failure note**
 
@@ -43,10 +42,3 @@ Done does not mean:
 - Every edge case is handled
 - The implementation matches what you would have chosen in a greenfield project
 
-Satisfying the spec is the definition of done.
-
-## When the Spec Is Unclear
-
-When a spec criterion is genuinely ambiguous, apply the conservative interpretation
-and document the ambiguity in a comment near the relevant code. Do not ask the human
-(they are not available during implementation). Do not invent the answer silently.

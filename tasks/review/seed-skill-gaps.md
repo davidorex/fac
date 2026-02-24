@@ -1,7 +1,8 @@
 # Review Task: seed-skill-gaps
 
 spec_archive: specs/archive/seed-skill-gaps.md
-built_at: 2026-02-24T11:43:44
+built_at: 2026-02-24T12:38:52
+rebuild_of: tasks/failed/seed-skill-gaps.v1.md
 built_by: builder
 
 ## Deliverables

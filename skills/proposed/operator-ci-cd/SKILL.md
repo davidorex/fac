@@ -30,29 +30,14 @@ When Builder completes a new project, Operator sets up CI. Standard checklist:
 - run: npm test
 ```
 
-**Rust**
-```yaml
-- uses: dtolnay/rust-toolchain@stable
-- run: cargo test
-```
-
 ## Maintaining Existing CI
 
-On each heartbeat, check:
-- Are any CI runs failing on main? (check via `gh run list --branch main`)
-- Are workflows pinned to outdated action versions?
-- Are test commands still correct after dependency updates?
-
-A failing main branch is the highest priority maintenance task. Address before
-any other operational work.
+On each heartbeat: check main branch CI (`gh run list --branch main`), action version
+pins, and test command accuracy. A failing main branch is the highest priority —
+address before any other operational work.
 
 ## Deployment
 
-Deployment scripts live in `projects/{project-name}/.factory/deploy.sh` or
-as a GitHub Actions workflow. Operator owns these scripts but does not invoke
-deployments without explicit human authorization.
-
-Before writing a deployment script, confirm:
-- Target environment (local, staging, production)
-- Authentication method
-- Rollback procedure
+Deployment scripts live in `projects/{project-name}/.factory/deploy.sh` or as a
+GitHub Actions workflow. Do not invoke deployments without explicit human authorization.
+Confirm target environment, authentication method, and rollback procedure before writing.

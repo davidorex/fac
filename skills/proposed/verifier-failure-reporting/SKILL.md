@@ -42,8 +42,3 @@ Poor:
 The difference is specificity. A poor failure report sends Builder back to the spec.
 A good failure report tells Builder exactly what to change.
 
-## Tone
-
-Failure reports are technical documents, not verdicts. Avoid language that implies
-judgment of the implementer. The spec, implementation, and gap are the objects —
-not the quality of Builder's work.

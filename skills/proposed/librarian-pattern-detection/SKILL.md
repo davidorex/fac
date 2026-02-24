@@ -24,9 +24,7 @@ On each heartbeat, scan:
 - `memory/daily/builder/` — Builder's recent struggles
 - `skills/proposed/` — check whether proposed skills address a common theme
 
-Look for the underlying class, not the surface symptom. "Builder used the wrong
-argparse API" and "Builder didn't validate empty inputs" may both be instances of
-"Builder lacks Python stdlib idioms" — that's one pattern, not two.
+Look for the underlying class, not the surface symptom — multiple incidents may be one pattern.
 
 ## Writing a Pattern Skill
 
@@ -37,14 +35,8 @@ that:
 - Gives concrete behavioral guidance, not vague principles
 - Stays under 40 lines of content — if it's longer, split it
 
-After writing the proposed skill, note it in your daily log and in `memory/shared/KNOWLEDGE.md`.
-
 ## Avoiding Over-Generalization
 
-The risk in pattern detection is making patterns too broad. "Write better code" is
-not a useful pattern. "Validate CLI arguments before using them, because argparse
-does not reject empty strings" is useful.
-
-Test your pattern skill by asking: "Would an agent reading only this skill understand
-what to do differently in the specific situation it describes?" If the answer is
-vague, narrow the skill.
+The risk is patterns that are too broad. Test your pattern skill: "Would an agent
+reading this understand what to do differently in the specific situation?" If not,
+narrow it. "Validate CLI arguments before using them" is useful; "write better code" is not.

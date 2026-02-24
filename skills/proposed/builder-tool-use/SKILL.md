@@ -42,9 +42,3 @@ description: How to use the filesystem, shell, and git. Builder's tool vocabular
 - Tests live at `projects/{project-name}/tests/`
 - Keep stdlib-only implementations unless dependencies are specified in the spec
 
-## When Tools Fail
-
-- A tool failure is a signal — investigate before retrying
-- A repeated tool failure on the same operation suggests an environmental issue
-  Log it to your daily log and note it in the review task
-- Never silently swallow tool errors in implementation code

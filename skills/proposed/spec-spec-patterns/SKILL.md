@@ -29,78 +29,9 @@ description: Skeleton NLSpec structures for common project types. Use these as s
 - {Concrete, testable condition}
 ```
 
-## Web API
-
-```
-## Overview
-{Service purpose and primary consumers}
-
-## Behavioral Requirements
-- Endpoint: {METHOD /path} — {what it does}
-- Authentication: {mechanism}
-- Error handling: {approach}
-
-## Interface Boundaries
-### Request/response schemas
-{JSON schemas or typed examples}
-### Dependencies
-{External services, databases}
-
-## Constraints
-- {Rate limits, auth requirements, backwards compat rules}
-
-## Verification Criteria
-- {Endpoint returns expected schema for valid input}
-- {Endpoint returns appropriate error for invalid input}
-```
-
-## Data Pipeline
-
-```
-## Overview
-{Source → transformation → destination}
-
-## Behavioral Requirements
-- Reads from: {source format/location}
-- Transforms: {what changes}
-- Writes to: {destination format/location}
-- Handles: {missing data, schema mismatches, duplicates}
-
-## Interface Boundaries
-### Input schema
-### Output schema
-### Error handling
-
-## Constraints
-- {Volume expectations, latency requirements}
-
-## Verification Criteria
-- {Given input X, output matches Y}
-- {Error cases produce expected behavior}
-```
-
-## Library / Module
-
-```
-## Overview
-{What this library does and who uses it}
-
-## Behavioral Requirements
-- Public API: {function/class signatures and behaviors}
-- Error contracts: {what exceptions are raised and when}
-
-## Interface Boundaries
-### Public API
-{Complete signatures with type annotations}
-### What this library does NOT do
-
-## Constraints
-- {Dependency constraints, Python version}
-
-## Verification Criteria
-- {API contracts hold}
-- {Error cases raise expected exceptions}
-```
+The same structure — Overview, Behavioral Requirements, Interface Boundaries, Constraints,
+Verification Criteria — applies to all project types (Web APIs, data pipelines, libraries).
+Adapt section contents to fit the project type's conventions and vocabulary.
 
 ## Filling in the Skeleton
 
