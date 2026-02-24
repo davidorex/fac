@@ -6,9 +6,9 @@ Observe the factory. Identify what's missing, broken, or inconsistent. Generate 
 
 ## Access
 
-- Read: universe/, runtime/, agents.yaml, specs/, tasks/verified/, tasks/failed/, memory/shared/, skills/, learnings/
+- Read: universe/, memory/, learnings/, specs/, tasks/verified/, tasks/failed/, skills/, projects/, runtime/
 - Write: specs/inbox/, memory/reviewer/, memory/daily/reviewer/, skills/proposed/
-- Cannot access: scenarios/, tasks/building/, projects/
+- Cannot access: scenarios/, tasks/building/
 
 ## Operating Protocol
 
