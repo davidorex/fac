@@ -204,6 +204,156 @@ def run_research_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
     return log_lines
 
 
+def run_decision_monitor(workspace: Path, agent: str) -> list[str]:
+    """Scan specs in drafting for structured ambiguities and route them.
+
+    Reads specs/drafting/*.md, finds ### entries under a ## 7 or
+    ## Ambiguities heading that have reversibility: and impact: tags.
+
+    Soft gates (reversibility: high + impact: implementation|cosmetic) are
+    auto-resolved: the kernel picks the recommended option or the first option
+    and writes the decision with status: auto-resolved.
+
+    Hard gates (reversibility: low OR impact: governance) are written with
+    status: awaiting-operator.
+
+    Results are written to tasks/decisions/{spec-name}.md.  Returns log lines.
+    Only runs after spec or builder agents.
+    """
+    if agent not in ("spec", "builder"):
+        return []
+
+    drafting_dir = workspace / "specs" / "drafting"
+    decisions_dir = workspace / "tasks" / "decisions"
+
+    if not drafting_dir.exists():
+        return []
+
+    log_lines: list[str] = []
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    for spec_file in sorted(drafting_dir.glob("*.md")):
+        text = spec_file.read_text()
+
+        # Find ambiguity sections: ## 7 or ## Ambiguities
+        ambiguity_match = re.search(
+            r"^## (?:7\.?\s*Ambiguities|Ambiguities Requiring Human Decision)\b.*?\n"
+            r"(.*)",
+            text,
+            re.MULTILINE | re.DOTALL,
+        )
+        if not ambiguity_match:
+            continue
+
+        ambiguity_text = ambiguity_match.group(1)
+
+        # Parse individual entries (### headings within the ambiguity section)
+        entry_blocks = re.split(r"(?=^### )", ambiguity_text, flags=re.MULTILINE)
+
+        entries: list[dict] = []
+        for block in entry_blocks:
+            block = block.strip()
+            heading_match = re.match(r"^### (.+)", block)
+            if not heading_match:
+                continue
+
+            entry_id = heading_match.group(1).strip()
+
+            def _get(field: str, _block: str = block) -> str | None:
+                m = re.search(
+                    rf"^- {re.escape(field)}:\s*(.+)$", _block, re.MULTILINE
+                )
+                return m.group(1).strip().lower() if m else None
+
+            reversibility = _get("reversibility") or "unknown"
+            impact = _get("impact") or "unknown"
+            status = _get("status")
+
+            # Skip entries already resolved or not open
+            if status and status not in ("open",):
+                continue
+
+            # Extract recommendation if present
+            rec_match = re.search(
+                r"\*\*Recommendation[:\*]*\*?\*?\s*(.*?)(?=^###|\Z)",
+                block, re.MULTILINE | re.DOTALL,
+            )
+            recommendation = rec_match.group(1).strip() if rec_match else None
+
+            # Extract first option as fallback for auto-resolve
+            first_option_match = re.search(
+                r"^\*\*\(a\)\*\*\s*(.+)$", block, re.MULTILINE,
+            )
+            first_option = first_option_match.group(1).strip() if first_option_match else None
+
+            # Classify: soft or hard gate
+            is_soft = (
+                reversibility == "high"
+                and impact in ("implementation", "cosmetic")
+            )
+
+            entries.append({
+                "id": entry_id,
+                "reversibility": reversibility,
+                "impact": impact,
+                "is_soft": is_soft,
+                "recommendation": recommendation,
+                "first_option": first_option,
+                "block": block,
+            })
+
+        if not entries:
+            continue
+
+        # Write decisions file
+        spec_name = spec_file.stem
+        decision_file = decisions_dir / f"{spec_name}.md"
+        decisions_dir.mkdir(parents=True, exist_ok=True)
+
+        lines: list[str] = [f"# Decisions: {spec_name}\n"]
+        n_auto = 0
+        n_hard = 0
+
+        for e in entries:
+            lines.append(f"### {e['id']}")
+
+            if e["is_soft"]:
+                # Auto-resolve: pick recommendation or first option
+                chosen = e["recommendation"] or e["first_option"] or "first option"
+                lines.append(f"- status: auto-resolved")
+                lines.append(f"- decided-by: kernel")
+                lines.append(f"- decided-at: {now}")
+                lines.append(f"- answer: {chosen}")
+                lines.append(f"- reversibility: {e['reversibility']}")
+                lines.append(f"- impact: {e['impact']}")
+                n_auto += 1
+            else:
+                # Hard gate: awaiting operator
+                lines.append(f"- status: awaiting-operator")
+                lines.append(f"- reversibility: {e['reversibility']}")
+                lines.append(f"- impact: {e['impact']}")
+                n_hard += 1
+
+            # Preserve the original options/recommendation text
+            lines.append("")
+            lines.append(e["block"])
+            lines.append("")
+
+        decision_file.write_text("\n".join(lines))
+
+        if n_auto > 0:
+            log_lines.append(
+                f"Decision Monitor: {n_auto} ambiguity(s) auto-resolved for {spec_name}"
+            )
+        if n_hard > 0:
+            log_lines.append(
+                f"Decision Monitor: {n_hard} hard gate(s) for {spec_name}"
+                f" — run: factory decide {spec_name}"
+            )
+
+    return log_lines
+
+
 def run_task_review_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
     """Remove stale files from tasks/review/ that exist in tasks/verified/ or tasks/failed/.
 
@@ -914,6 +1064,14 @@ def run(agent: str, task: str | None, message: str | None) -> None:
         research_cleanup_log = run_research_cleanup(config.workspace)
         for line in research_cleanup_log:
             console.print(f"  [dim]{line}[/dim]")
+
+        # Post-execution: decision monitor (spec and builder agents)
+        decision_log = run_decision_monitor(config.workspace, agent)
+        for line in decision_log:
+            if "hard gate" in line:
+                console.print(f"  [yellow]{line}[/yellow]")
+            else:
+                console.print(f"  [dim]{line}[/dim]")
 
         # Post-execution: failure resolution and learning extraction (verifier only)
         if agent == "verifier":
