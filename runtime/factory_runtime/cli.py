@@ -193,13 +193,27 @@ def _compute_next_actions(workspace: Path) -> list[str]:
     if research_count > 0:
         actions.append("factory run researcher")
     if inbox_count > 0 or drafting_count > 0:
-        actions.append("factory run spec")
+        _, inbox_names = _count_dir(workspace, "specs/inbox")
+        _, drafting_names = _count_dir(workspace, "specs/drafting")
+        spec_names = inbox_names + drafting_names
+        if len(spec_names) == 1:
+            actions.append(f"factory run spec {spec_names[0]}")
+        else:
+            actions.append(f"factory run spec NAME  ({len(spec_names)}: {', '.join(spec_names[:3])})")
     if ready_count > 0:
-        actions.append("factory run builder")
+        _, ready_names = _count_dir(workspace, "specs/ready")
+        if len(ready_names) == 1:
+            actions.append(f"factory run builder {ready_names[0]}")
+        else:
+            actions.append(f"factory run builder NAME  ({len(ready_names)}: {', '.join(ready_names[:3])})")
     if review_count > 0:
         actions.append("factory run verifier")
     if failed_count > 0:
-        actions.append("factory rebuild TASK_NAME")
+        _, failed_names = _count_dir(workspace, "tasks/failed")
+        if len(failed_names) == 1:
+            actions.append(f"factory rebuild {failed_names[0]}")
+        else:
+            actions.append(f"factory rebuild NAME  ({len(failed_names)}: {', '.join(failed_names[:3])})")
 
     return actions
 
