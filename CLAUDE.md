@@ -26,9 +26,22 @@ The human is not a user of the system — the human is the **system operator**. 
 | Console Command | OS Equivalent | Purpose |
 |---|---|---|
 | `factory status` | `top`/`htop` | Process monitor — what's running, blocked, queued |
-| `factory decide` | Interrupt handler console | Respond to hard gates — read context, make call, resume |
-| `factory needs` | `dmesg` | Kernel message buffer — hardware-level issues |
-| `factory run` | Process scheduler | Dispatch a specific process |
+| `factory run AGENT [SPEC]` | Process scheduler | Dispatch a specific agent, optionally targeting a spec |
+| `factory advance SPEC` | Context-aware dispatch | Gather research + decisions, send to right agent for finalization |
+| `factory decide SPEC` | Interrupt handler | Respond to hard gates — `--entry ID --answer CHOICE` |
+| `factory needs` | `dmesg` | Kernel message buffer — agent blockers and observations |
+| `factory init-project` | `mount` | Register current directory as a factory project (writes `.factory` marker) |
+| `factory rebuild TASK` | Process restart | Re-queue failed work with versioned failure report |
+| `factory resolve TASK` | Manual interrupt clear | Mark a failed task as resolved without rebuild |
+| `factory reflect [AGENT]` | Self-diagnostic | Agents examine own state, surface observations |
+
+## Project Registration
+
+Any directory can be a factory project. Run `factory init-project` from within it to write a `.factory` marker file pointing to the factory workspace. After that, all `factory` commands work from within that directory. The CLI resolves upward (like `.git`) to find the marker.
+
+## WhatsApp Bridge (NanoClaw IPC)
+
+All agents can send WhatsApp notifications via `notifications/` (symlink to NanoClaw IPC). The kernel automatically sends a notification after every agent run (skipping idle NO_REPLY heartbeats) with the agent's response summary and computed next actions. Inbound: NanoClaw can drop intents into `specs/inbox/` via its `factory-inbox` skill.
 
 ## Decision Gates: Soft vs Hard
 

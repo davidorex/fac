@@ -58,7 +58,16 @@ When agents hit ambiguities during spec or build, the decision-heuristic skill c
 The structured ambiguity format (in specs §7) uses tagged entries with `reversibility:` and `impact:` fields so the pipeline can route correctly.
 
 ### Pipeline Next-Step Display
-After each agent run, the runtime prints downstream directories with pending counts and actionable commands — guides the human on what to run next. When `tasks/decisions/` has items, the hint is `factory decide` (not `factory run researcher`).
+After each agent run, the runtime prints downstream directories with pending counts and actionable commands — guides the human on what to run next. Hints include spec/task names when there's a single item (copy-pasteable commands). When specs are in `drafting/` with research or decisions available, the hint says `factory advance NAME` instead of `factory run spec`. When `tasks/decisions/` has unresolved hard gates, the hint is `factory decide`.
+
+### factory advance Command
+`factory advance SPEC` is semantically distinct from `factory run spec SPEC`. It gathers all unblocking context (research briefs from `tasks/research-done/`, resolved decisions from `tasks/decisions/`, and the current spec content) into a single directed message for the right agent. Drafting specs go to the spec agent for finalization; ready specs go to the builder.
+
+### WhatsApp Notifications
+The kernel sends a WhatsApp message via NanoClaw IPC after every agent run (skipping NO_REPLY idle heartbeats). The notification includes a truncated agent response summary and computed next actions. All 7 agents have `shared/nanoclaw-whatsapp` skill and `notifications/` write access.
+
+### Project Registration
+`factory init-project` writes a `.factory` marker file in the current directory, pointing to the factory workspace. The CLI resolves upward from cwd to find this marker (like `.git`), so all factory commands work from within project directories. `FactoryConfig` carries `project_dir` and `project_name` when in project context.
 
 ## Known System Quirks
 

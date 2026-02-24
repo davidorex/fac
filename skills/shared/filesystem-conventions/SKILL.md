@@ -38,7 +38,7 @@ factory/
 │   ├── corrections/     # Human corrections (highest signal)
 │   └── discoveries/     # New patterns, better approaches
 ├── universe/            # Reference docs — read-only for all agents
-├── projects/            # The actual codebases (git repos)
+├── projects/            # The actual codebases (git repos) — or registered externally via .factory
 ├── notifications/       # → NanoClaw IPC (symlink). Write JSON here to send WhatsApp messages.
 └── runs/                # Execution history
 ```
@@ -69,6 +69,10 @@ Git tracks everything. Commit after every meaningful state change.
 - Subagent output: `tasks/{parent-agent}-sub/{sub-id}/output.md`
 - Decision requests: `tasks/decisions/{spec-name}.md`
 - Builder notes: `tasks/review/{task-name}.builder-notes.md`
+
+## Project Registration
+
+Projects can live anywhere on disk. Running `factory init-project` from a project directory writes a `.factory` marker file pointing to the factory workspace. The CLI resolves upward from cwd to find this marker, so all factory commands work from within registered project directories.
 
 ## The `universe/` Directory
 
