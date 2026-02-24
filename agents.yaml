@@ -7,12 +7,12 @@ agents:
     provider: anthropic
     skills:
       always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
-      available: [shared/human-action-needed, shared/decomposition, researcher/research-approach, researcher/source-evaluation, researcher/recommendation-format]
+      available: [shared/human-action-needed, shared/decomposition, shared/nanoclaw-whatsapp, researcher/research-approach, researcher/source-evaluation, researcher/recommendation-format]
     memory:
       private: memory/researcher/MEMORY.md
       daily: memory/daily/researcher/
     can_read: [tasks/research/, memory/shared/, skills/shared/, skills/researcher/, learnings/, projects/, universe/]
-    can_write: [tasks/research-done/, memory/researcher/, memory/daily/researcher/, skills/proposed/]
+    can_write: [tasks/research-done/, memory/researcher/, memory/daily/researcher/, skills/proposed/, notifications/]
     cannot_access: [scenarios/, tasks/building/]
     heartbeat: "0 9 * * *"  # daily at 9am
     shell_access: read_only
@@ -23,12 +23,12 @@ agents:
     provider: anthropic
     skills:
       always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
-      available: [shared/human-action-needed, shared/decision-heuristic, shared/decomposition, spec/nlspec-format, spec/domain-interview, spec/spec-patterns]
+      available: [shared/human-action-needed, shared/decision-heuristic, shared/decomposition, shared/nanoclaw-whatsapp, spec/nlspec-format, spec/domain-interview, spec/spec-patterns]
     memory:
       private: memory/spec/MEMORY.md
       daily: memory/daily/spec/
     can_read: [specs/, tasks/research-done/, tasks/decisions/, memory/shared/, skills/shared/, skills/spec/, learnings/, universe/, runtime/]
-    can_write: [specs/drafting/, specs/inbox/, specs/ready/, tasks/research/, tasks/decisions/, memory/spec/, memory/daily/spec/, skills/proposed/]
+    can_write: [specs/drafting/, specs/inbox/, specs/ready/, tasks/research/, tasks/decisions/, memory/spec/, memory/daily/spec/, skills/proposed/, notifications/]
     cannot_access: [scenarios/, tasks/building/]
     heartbeat: "0 8 * * *"  # daily at 8am
     shell_access: none
@@ -39,12 +39,12 @@ agents:
     provider: anthropic
     skills:
       always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
-      available: [shared/human-action-needed, shared/decision-heuristic, shared/decomposition, builder/implementation-approach, builder/convergence, builder/tool-use, builder/refactorability-first]
+      available: [shared/human-action-needed, shared/decision-heuristic, shared/decomposition, shared/nanoclaw-whatsapp, builder/implementation-approach, builder/convergence, builder/tool-use, builder/refactorability-first]
     memory:
       private: memory/builder/MEMORY.md
       daily: memory/daily/builder/
     can_read: [specs/ready/, tasks/research-done/, tasks/decisions/, skills/shared/, skills/builder/, learnings/, projects/, universe/]
-    can_write: [tasks/building/, tasks/review/, tasks/research/, projects/, specs/archive/, memory/builder/, memory/daily/builder/, skills/proposed/]
+    can_write: [tasks/building/, tasks/review/, tasks/research/, projects/, specs/archive/, memory/builder/, memory/daily/builder/, skills/proposed/, notifications/]
     cannot_access: [scenarios/]
     heartbeat: "*/30 * * * *"  # every 30 minutes when there's work
     shell_access: full
@@ -55,12 +55,12 @@ agents:
     provider: anthropic
     skills:
       always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
-      available: [shared/human-action-needed, shared/decomposition, verifier/verification-protocol, verifier/satisfaction-scoring, verifier/scenario-evaluation, verifier/failure-reporting]
+      available: [shared/human-action-needed, shared/decomposition, shared/nanoclaw-whatsapp, verifier/verification-protocol, verifier/satisfaction-scoring, verifier/scenario-evaluation, verifier/failure-reporting]
     memory:
       private: memory/verifier/MEMORY.md
       daily: memory/daily/verifier/
     can_read: [specs/ready/, specs/archive/, tasks/review/, scenarios/, skills/shared/, skills/verifier/, projects/, universe/]
-    can_write: [tasks/verified/, tasks/review/, tasks/failed/, tasks/research/, scenarios/*/satisfaction.md, memory/verifier/, memory/daily/verifier/, skills/proposed/]
+    can_write: [tasks/verified/, tasks/review/, tasks/failed/, tasks/research/, scenarios/*/satisfaction.md, memory/verifier/, memory/daily/verifier/, skills/proposed/, notifications/]
     cannot_access: [tasks/building/]
     heartbeat: "*/15 * * * *"  # check for completed work every 15 minutes
     shell_access: read_only
@@ -87,12 +87,12 @@ agents:
     provider: anthropic
     skills:
       always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
-      available: [shared/human-action-needed, shared/decomposition, operator/git-workflow, operator/ci-cd, operator/dependency-management, operator/monitoring]
+      available: [shared/human-action-needed, shared/decomposition, shared/nanoclaw-whatsapp, operator/git-workflow, operator/ci-cd, operator/dependency-management, operator/monitoring]
     memory:
       private: memory/operator/MEMORY.md
       daily: memory/daily/operator/
     can_read: [projects/, tasks/maintenance/, skills/shared/, skills/operator/, memory/shared/, universe/]
-    can_write: [projects/, tasks/maintenance/, memory/operator/, memory/daily/operator/, skills/proposed/]
+    can_write: [projects/, tasks/maintenance/, memory/operator/, memory/daily/operator/, skills/proposed/, notifications/]
     cannot_access: [scenarios/, tasks/building/, specs/drafting/]
     heartbeat: "0 * * * *"  # hourly
     shell_access: full

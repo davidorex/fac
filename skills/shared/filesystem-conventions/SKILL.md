@@ -39,6 +39,7 @@ factory/
 │   └── discoveries/     # New patterns, better approaches
 ├── universe/            # Reference docs — read-only for all agents
 ├── projects/            # The actual codebases (git repos)
+├── notifications/       # → NanoClaw IPC (symlink). Write JSON here to send WhatsApp messages.
 └── runs/                # Execution history
 ```
 
