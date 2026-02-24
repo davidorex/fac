@@ -71,12 +71,12 @@ agents:
     provider: anthropic
     skills:
       always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
-      available: [shared/human-action-needed, shared/decomposition, librarian/knowledge-curation, librarian/pattern-detection, librarian/memory-hygiene]
+      available: [shared/human-action-needed, shared/decomposition, shared/nanoclaw-whatsapp, librarian/knowledge-curation, librarian/pattern-detection, librarian/memory-hygiene]
     memory:
       private: memory/librarian/MEMORY.md
       daily: memory/daily/librarian/
     can_read: [skills/, memory/, learnings/, universe/, tasks/verified/, tasks/failed/, tasks/resolved/, specs/archive/]
-    can_write: [skills/shared/, skills/proposed/, skills/builder/, skills/spec/, skills/researcher/, skills/verifier/, skills/reviewer/, skills/operator/, skills/librarian/, memory/shared/, memory/librarian/, memory/daily/librarian/, learnings/]
+    can_write: [skills/shared/, skills/proposed/, skills/builder/, skills/spec/, skills/researcher/, skills/verifier/, skills/reviewer/, skills/operator/, skills/librarian/, memory/shared/, memory/librarian/, memory/daily/librarian/, learnings/, notifications/]
     cannot_access: [scenarios/, tasks/building/]
     heartbeat: "0 22 * * *"  # nightly review at 10pm
     shell_access: none
@@ -103,12 +103,12 @@ agents:
     provider: anthropic
     skills:
       always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
-      available: [shared/human-action-needed, shared/decomposition, reviewer/review-protocol]
+      available: [shared/human-action-needed, shared/decomposition, shared/nanoclaw-whatsapp, reviewer/review-protocol]
     memory:
       private: memory/reviewer/MEMORY.md
       daily: memory/daily/reviewer/
     can_read: [universe/, memory/, learnings/, specs/, tasks/verified/, tasks/failed/, skills/, projects/, runtime/]
-    can_write: [specs/inbox/, memory/reviewer/, memory/daily/reviewer/, skills/proposed/]
+    can_write: [specs/inbox/, memory/reviewer/, memory/daily/reviewer/, skills/proposed/, notifications/]
     cannot_access: [scenarios/, tasks/building/]
     heartbeat: "0 6 * * *"  # daily at 6am, before spec's 8am
     shell_access: read_only 
