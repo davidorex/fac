@@ -492,6 +492,140 @@ def rebuild_task(workspace: Path, task_name: str) -> tuple[int, str]:
     return 0, summary
 
 
+# Category display order and labels for `factory needs`
+_CATEGORY_DISPLAY_ORDER: list[tuple[str, str]] = [
+    ("permission-change", "Permission Changes"),
+    ("config-edit", "Config Edits"),
+    ("manual-intervention", "Manual Interventions"),
+    ("approval", "Approvals"),
+]
+
+
+def _format_age(created_str: str | None) -> str:
+    """Format a created timestamp as a human-readable age string."""
+    if not created_str:
+        return "unknown"
+    try:
+        created = datetime.fromisoformat(created_str)
+        delta = datetime.now() - created
+        if delta.total_seconds() < 3600:
+            return f"{int(delta.total_seconds() / 60)}m ago"
+        elif delta.total_seconds() < 86400:
+            return f"{int(delta.total_seconds() / 3600)}h ago"
+        else:
+            return f"{delta.days}d ago"
+    except (ValueError, TypeError):
+        return "unknown"
+
+
+def parse_needs_entries(workspace: Path) -> list[dict]:
+    """Parse all needs entries from memory/*/needs.md files.
+
+    Returns a list of dicts with keys:
+        id, status, created, category, blocked, context, exact_change,
+        agent, file_path.
+
+    Only reads direct subdirectories of memory/ (one level deep), not the
+    daily/ or shared/ subdirectories that do not contain needs.md files.
+    """
+    entries: list[dict] = []
+    memory_dir = workspace / "memory"
+    if not memory_dir.exists():
+        return entries
+
+    for needs_file in sorted(memory_dir.glob("*/needs.md")):
+        agent_name = needs_file.parent.name
+        text = needs_file.read_text()
+
+        # Split the file on ## headings at line start to isolate entry blocks.
+        # Each block starts with "## {id}" and ends at the next "## " or EOF.
+        blocks = re.split(r"^(?=## )", text, flags=re.MULTILINE)
+
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+            heading_match = re.match(r"^## (.+)", block)
+            if not heading_match:
+                continue
+
+            entry_id = heading_match.group(1).strip()
+
+            def get_field(field_name: str, _block: str = block) -> str | None:
+                m = re.search(
+                    rf"^- {re.escape(field_name)}:\s*(.+)$", _block, re.MULTILINE
+                )
+                return m.group(1).strip() if m else None
+
+            exact_match = re.search(
+                r"^### Exact Change\s*\n(.*?)(?=^##|\Z)",
+                block,
+                re.MULTILINE | re.DOTALL,
+            )
+
+            entries.append(
+                {
+                    "id": entry_id,
+                    "status": get_field("status") or "open",
+                    "created": get_field("created"),
+                    "category": get_field("category") or "manual-intervention",
+                    "blocked": get_field("blocked"),
+                    "context": get_field("context"),
+                    "exact_change": exact_match.group(1).strip() if exact_match else None,
+                    "agent": agent_name,
+                    "file_path": needs_file,
+                }
+            )
+
+    return entries
+
+
+def resolve_need(workspace: Path, entry_id: str) -> tuple[int, str]:
+    """Mark a needs entry as resolved.
+
+    Searches all memory/*/needs.md files for an open entry whose ## heading
+    matches entry_id.  Changes ``status: open`` to ``status: resolved`` and
+    inserts a ``resolved_at`` timestamp on the line immediately after.
+
+    Returns (exit_code, message):
+    - 0 — success; message names the file that was modified
+    - 1 — no open entry found with that ID
+    """
+    memory_dir = workspace / "memory"
+    if not memory_dir.exists():
+        return 1, f"No open needs entry found with ID: {entry_id}"
+
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    for needs_file in sorted(memory_dir.glob("*/needs.md")):
+        text = needs_file.read_text()
+
+        pattern = re.compile(
+            rf"^## {re.escape(entry_id)}\n(.*?)(?=^## |\Z)",
+            re.MULTILINE | re.DOTALL,
+        )
+        match = pattern.search(text)
+        if not match:
+            continue
+
+        full_entry = match.group(0)
+        if "- status: open" not in full_entry:
+            # Entry exists but is already resolved — keep looking
+            continue
+
+        new_entry = full_entry.replace(
+            "- status: open",
+            f"- status: resolved\n- resolved_at: {now}",
+            1,
+        )
+        new_text = text.replace(full_entry, new_entry, 1)
+        needs_file.write_text(new_text)
+        agent = needs_file.parent.name
+        return 0, f"Resolved: {entry_id} (memory/{agent}/needs.md)"
+
+    return 1, f"No open needs entry found with ID: {entry_id}"
+
+
 @click.group()
 @click.pass_context
 def main(ctx: click.Context) -> None:
@@ -982,6 +1116,139 @@ def rebuild(task_name: str) -> None:
     elif exit_code == 2:
         console.print(f"[yellow]Warning:[/yellow] {message}")
         sys.exit(2)
+
+
+@main.command()
+@click.option(
+    "--resolve",
+    "resolve_id",
+    default=None,
+    metavar="ID",
+    help="Mark the entry with this ID as resolved.",
+)
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    default=False,
+    help="Show resolved entries alongside open ones (default: open only).",
+)
+def needs(resolve_id: str | None, show_all: bool) -> None:
+    """Show or resolve human-action-needed entries across all agents.
+
+    Reads memory/*/needs.md and displays open items grouped by category,
+    sorted oldest-first within each category.
+
+    \b
+    Exit codes:
+      0  Success (including "nothing to show" and successful resolve)
+      1  --resolve specified but no open entry found with that ID
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    workspace = config.workspace
+
+    # --resolve path: locate and resolve a single entry, then commit
+    if resolve_id is not None:
+        exit_code, message = resolve_need(workspace, resolve_id)
+        if exit_code == 0:
+            console.print(f"[green]{message}[/green]")
+            # Stage the modified needs.md and commit
+            subprocess.run(
+                ["git", "add", "memory/"],
+                cwd=workspace,
+                capture_output=True,
+            )
+            result = subprocess.run(
+                ["git", "commit", "-m", f"Resolve factory need: {resolve_id}"],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                console.print(f"  [dim]State committed to git.[/dim]")
+            else:
+                console.print(
+                    f"  [yellow]Warning:[/yellow] git commit failed: {result.stderr.strip()}"
+                )
+        else:
+            console.print(f"[red]Error:[/red] {message}")
+            sys.exit(1)
+        return
+
+    # Display path
+    all_entries = parse_needs_entries(workspace)
+
+    # Warn about duplicate IDs (violates uniqueness invariant)
+    seen_ids: dict[str, int] = {}
+    for entry in all_entries:
+        eid = entry["id"]
+        seen_ids[eid] = seen_ids.get(eid, 0) + 1
+    for eid, count in seen_ids.items():
+        if count > 1:
+            console.print(
+                f"  [yellow]Warning:[/yellow] Duplicate needs entry ID: {eid}"
+            )
+
+    # Filter to open entries (default) or all entries (--all)
+    display_entries = all_entries if show_all else [
+        e for e in all_entries if e["status"] == "open"
+    ]
+
+    open_count = sum(1 for e in all_entries if e["status"] == "open")
+
+    if not display_entries:
+        console.print("Factory needs nothing — all clear.")
+        return
+
+    # Group by category
+    categories: dict[str, list[dict]] = {}
+    for entry in display_entries:
+        cat = entry["category"]
+        if cat not in categories:
+            categories[cat] = []
+        categories[cat].append(entry)
+
+    # Sort entries within each category: oldest created first (None → end)
+    for cat_entries in categories.values():
+        cat_entries.sort(key=lambda e: e["created"] or "9999")
+
+    label = "open item" if open_count == 1 else "open items"
+    console.print(f"\n[bold]Factory Needs[/bold] — [yellow]{open_count}[/yellow] {label}\n")
+
+    # Display in canonical category order, then any unrecognised categories
+    known_keys = [k for k, _ in _CATEGORY_DISPLAY_ORDER]
+    extra_keys = [k for k in categories if k not in known_keys]
+    ordered_keys = known_keys + extra_keys
+
+    for cat_key in ordered_keys:
+        if cat_key not in categories:
+            continue
+        cat_entries = categories[cat_key]
+        display_name = next(
+            (name for k, name in _CATEGORY_DISPLAY_ORDER if k == cat_key),
+            cat_key.replace("-", " ").title(),
+        )
+        console.print(f"[bold]{display_name}[/bold] ({len(cat_entries)}):")
+        for entry in cat_entries:
+            age = _format_age(entry["created"])
+            eid = entry["id"]
+            agent = entry["agent"]
+            blocked = entry["blocked"] or "(no description)"
+            status_tag = (
+                ""
+                if entry["status"] == "open"
+                else f" [dim]\\[{entry['status']}][/dim]"
+            )
+            console.print(
+                f"  [cyan]{eid:<44}[/cyan]  [dim]\\[{agent}, {age}][/dim]{status_tag}"
+            )
+            console.print(f"    {blocked}")
+        console.print()
 
 
 if __name__ == "__main__":

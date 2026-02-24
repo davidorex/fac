@@ -19,6 +19,21 @@ Before identifying anything, read:
 
 Note what topics are already addressed. Do not generate competing or duplicate intents. If an existing intent partially addresses a concern, note it in your daily log but do not generate a competing intent.
 
+### Step 1.5: Needs Escalation Check
+
+Read `memory/*/needs.md` across all agent directories.
+
+For any entry where `status: open` and the `created` timestamp is more than 2× your heartbeat interval in the past, note it in your review output as an **escalated item**. Format:
+
+```
+Escalated need: {id} [{agent}, created {timestamp}]
+  {blocked field}
+```
+
+This is informational — you cannot resolve needs entries. The human runs `factory needs` to see the full list and `factory needs --resolve {id}` after acting.
+
+Do not generate a competing intent if the blocker is already captured in a needs entry.
+
 ### Step 2: Review Categories (in priority order)
 
 Work through these categories. Stop at 3 high-quality intents — do not exhaust all categories if you've already found 3 worth generating.
