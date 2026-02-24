@@ -53,6 +53,21 @@ PIPELINE_ORDER: list[str] = [
 ]
 
 
+def _resolve_spec_file(workspace: Path, name: str) -> Path | None:
+    """Find a spec file by name across pipeline stages.
+
+    Searches inbox/, drafting/, ready/ in that order.
+    Accepts with or without .md extension.
+    """
+    if not name.endswith(".md"):
+        name = name + ".md"
+    for stage in ("inbox", "drafting", "ready"):
+        candidate = workspace / "specs" / stage / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _count_dir(workspace: Path, rel_path: str) -> tuple[int, list[str]]:
     """Count non-dotfile items in a directory. Returns (count, [names])."""
     d = workspace / rel_path
@@ -1067,15 +1082,35 @@ def init(workspace: str | None) -> None:
 
 @main.command()
 @click.argument("agent")
+@click.argument("spec_name", required=False)
 @click.option("--task", type=click.Path(exists=True), help="Task file to assign")
 @click.option("--message", "-m", type=str, help="Free text message for the agent")
-def run(agent: str, task: str | None, message: str | None) -> None:
-    """Invoke an agent. Heartbeat mode if no --task or --message given."""
+def run(agent: str, spec_name: str | None, task: str | None, message: str | None) -> None:
+    """Invoke an agent. Heartbeat mode if no --task or --message given.
+
+    Optionally pass a SPEC_NAME to direct the agent to a specific spec:
+
+        factory run spec multi-cli-backend-support
+    """
     try:
         config = load_config()
     except FileNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
+
+    if spec_name:
+        # Resolve the spec file and inject as a directed message
+        spec_file = _resolve_spec_file(config.workspace, spec_name)
+        if spec_file is None:
+            console.print(
+                f"[red]Error:[/red] No spec '{spec_name}' found in inbox/, drafting/, or ready/"
+            )
+            sys.exit(1)
+        stage = spec_file.parent.name
+        message = (
+            f"Work on this specific spec: {spec_name} (currently in {stage}/)\n\n"
+            f"--- {spec_file.name} ---\n{spec_file.read_text()}"
+        )
 
     if agent not in config.agents:
         console.print(
