@@ -1682,7 +1682,11 @@ def parse_decision_entries(decision_file: Path) -> list[dict]:
         if not heading_match:
             continue
 
-        entry_id = heading_match.group(1).strip()
+        raw_heading = heading_match.group(1).strip()
+        # Extract the numeric prefix (e.g. "7.1") as the short ID for matching
+        id_match = re.match(r"^(\d+\.\d+)", raw_heading)
+        entry_id = id_match.group(1) if id_match else raw_heading
+        entry_title = raw_heading
 
         def get_field(field_name: str, _block: str = block) -> str | None:
             m = re.search(
@@ -1706,6 +1710,7 @@ def parse_decision_entries(decision_file: Path) -> list[dict]:
 
         entries.append({
             "id": entry_id,
+            "title": entry_title,
             "status": get_field("status") or "open",
             "reversibility": get_field("reversibility") or "unknown",
             "impact": get_field("impact") or "unknown",
@@ -1714,7 +1719,25 @@ def parse_decision_entries(decision_file: Path) -> list[dict]:
             "context": get_field("context"),
         })
 
-    return entries
+    # Deduplicate: if the Decision Monitor prepended status-only headers,
+    # the same ID appears twice. Keep the one with the richest status
+    # (awaiting-operator or auto-resolved or resolved over open).
+    seen: dict[str, int] = {}
+    deduped: list[dict] = []
+    status_priority = {"resolved": 4, "auto-resolved": 3, "awaiting-operator": 2, "open": 1}
+    for e in entries:
+        eid = e["id"]
+        prio = status_priority.get(e["status"], 0)
+        if eid in seen:
+            existing_idx = seen[eid]
+            existing_prio = status_priority.get(deduped[existing_idx]["status"], 0)
+            if prio > existing_prio:
+                deduped[existing_idx] = e
+        else:
+            seen[eid] = len(deduped)
+            deduped.append(e)
+
+    return deduped
 
 
 def resolve_decision(
@@ -1732,9 +1755,10 @@ def resolve_decision(
     text = decision_file.read_text()
     now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
-    # Find the entry block and replace its status
+    # Find the entry block and replace its status.
+    # Support prefix matching: --entry 7.1 matches "### 7.1 Governance hook gap..."
     pattern = re.compile(
-        rf"(### {re.escape(entry_id)}\n.*?)(- status:\s*\S+)",
+        rf"(### {re.escape(entry_id)}[^\n]*\n.*?)(- status:\s*\S+)",
         re.DOTALL,
     )
     match = pattern.search(text)
