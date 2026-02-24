@@ -28,7 +28,7 @@ agents:
       private: memory/spec/MEMORY.md
       daily: memory/daily/spec/
     can_read: [specs/, tasks/research-done/, memory/shared/, skills/shared/, skills/spec/, learnings/, universe/]
-    can_write: [specs/drafting/, specs/ready/, tasks/research/, memory/spec/, memory/daily/spec/, skills/proposed/]
+    can_write: [specs/drafting/, specs/inbox/, specs/ready/, tasks/research/, memory/spec/, memory/daily/spec/, skills/proposed/]
     cannot_access: [scenarios/, tasks/building/]
     heartbeat: "0 8 * * *"  # daily at 8am
     shell_access: none
@@ -60,7 +60,7 @@ agents:
       private: memory/verifier/MEMORY.md
       daily: memory/daily/verifier/
     can_read: [specs/ready/, tasks/review/, scenarios/, skills/shared/, skills/verifier/, projects/, universe/]
-    can_write: [tasks/verified/, tasks/failed/, tasks/research/, scenarios/*/satisfaction.md, memory/verifier/, memory/daily/verifier/, skills/proposed/]
+    can_write: [tasks/verified/, tasks/review/ tasks/failed/, tasks/research/, scenarios/*/satisfaction.md, memory/verifier/, memory/daily/verifier/, skills/proposed/]
     cannot_access: [tasks/building/]
     heartbeat: "*/15 * * * *"  # check for completed work every 15 minutes
     shell_access: read_only
