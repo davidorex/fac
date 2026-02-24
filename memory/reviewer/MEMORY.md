@@ -52,3 +52,11 @@ Generated intents go to specs/inbox/{brief-slug}.md:
 - Generated 3 intents: seed-skill-gaps, inbox-cleanup-convention, failure-learning-gap
 - Deferred: memory/shared/ staleness (librarian's domain), scenarios/ check (no access)
 - Key state at time of review: 14 missing seed skills, 4 stale pipeline files, 1 failed task with resolved blocker, empty learnings/
+
+### 2026-02-24T12:08 — Second review (heartbeat)
+- Pipeline was active since last review: 3 specs built, 2 verified, 1 failed
+- My inbox-cleanup-convention and failure-learning-gap intents were effectively addressed (by differently-named specs)
+- seed-skill-gaps FAILED verification — 11/14 skills exceeded 40-line constraint. Learning extracted. 14 skills remain unbuilt.
+- Generated 1 intent: failed-task-rebuild-convention (no mechanism to return failed builds to builder)
+- Known issue: 2 stale reviewer intents in specs/inbox/ (filename mismatch prevents cleanup). Deferred — not worth an intent.
+- Deferred again: memory/shared/ staleness (librarian still hasn't run), scenarios/ (no access)
