@@ -196,10 +196,22 @@ def _compute_next_actions(workspace: Path) -> list[str]:
         _, inbox_names = _count_dir(workspace, "specs/inbox")
         _, drafting_names = _count_dir(workspace, "specs/drafting")
         spec_names = inbox_names + drafting_names
+        # Annotate when drafting specs have unblocking context available
+        annotation = ""
+        if drafting_count > 0 and inbox_count == 0:
+            cues = []
+            rd_count, _ = _count_dir(workspace, "tasks/research-done")
+            if rd_count > 0:
+                cues.append("research done")
+            dec_dir = workspace / "tasks" / "decisions"
+            if dec_dir.exists() and any(dec_dir.glob("*.md")):
+                cues.append("decisions resolved")
+            if cues:
+                annotation = f"  ({', '.join(cues)} → finalize)"
         if len(spec_names) == 1:
-            actions.append(f"factory run spec {spec_names[0]}")
+            actions.append(f"factory run spec {spec_names[0]}{annotation}")
         else:
-            actions.append(f"factory run spec NAME  ({len(spec_names)}: {', '.join(spec_names[:3])})")
+            actions.append(f"factory run spec NAME  ({len(spec_names)}: {', '.join(spec_names[:3])}){annotation}")
     if ready_count > 0:
         _, ready_names = _count_dir(workspace, "specs/ready")
         if len(ready_names) == 1:
