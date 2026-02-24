@@ -47,4 +47,8 @@ Generated intents go to specs/inbox/{brief-slug}.md:
 
 ## Completed Reviews
 
-(none yet — initialized 2026-02-24)
+### 2026-02-24T11:25 — First review run
+- Scanned all 6 categories
+- Generated 3 intents: seed-skill-gaps, inbox-cleanup-convention, failure-learning-gap
+- Deferred: memory/shared/ staleness (librarian's domain), scenarios/ check (no access)
+- Key state at time of review: 14 missing seed skills, 4 stale pipeline files, 1 failed task with resolved blocker, empty learnings/
