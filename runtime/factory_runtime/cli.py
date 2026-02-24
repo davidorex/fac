@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import yaml
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -41,6 +42,12 @@ PIPELINE_DOWNSTREAM: dict[str, list[tuple[str, Optional[str]]]] = {
     "librarian": [],
     "operator": [],
 }
+
+# Canonical invocation order for `factory reflect`.
+# Matches the pipeline flow: research → spec → build → verify → curate → operate → review.
+PIPELINE_ORDER: list[str] = [
+    "researcher", "spec", "builder", "verifier", "librarian", "operator", "reviewer",
+]
 
 
 def print_pipeline_next(agent: str, workspace: Path) -> None:
@@ -624,6 +631,30 @@ def resolve_need(workspace: Path, entry_id: str) -> tuple[int, str]:
         return 0, f"Resolved: {entry_id} (memory/{agent}/needs.md)"
 
     return 1, f"No open needs entry found with ID: {entry_id}"
+
+
+def _snapshot_needs_ids(workspace: Path) -> set[str]:
+    """Return the set of all entry IDs currently present in memory/*/needs.md files.
+
+    Used by ``factory reflect`` to measure how many new entries agents write
+    during a reflection pass (post-snapshot minus pre-snapshot).
+    """
+    entries = parse_needs_entries(workspace)
+    return {e["id"] for e in entries}
+
+
+def _agent_yaml_block(workspace: Path, agent_name: str) -> str:
+    """Return the agents.yaml YAML block for *agent_name* as a plain-text string.
+
+    Re-reads agents.yaml and serializes just the named agent's section back
+    to YAML, so agents can see their own configuration without the runtime
+    needing to grant them read access to agents.yaml directly.
+    """
+    config_path = workspace / "agents.yaml"
+    with open(config_path) as f:
+        raw: dict = yaml.safe_load(f)
+    agent_data = raw.get("agents", {}).get(agent_name, {})
+    return yaml.dump({agent_name: agent_data}, default_flow_style=False, sort_keys=False)
 
 
 _META_SCENARIO_CONTENT = """\
@@ -1251,7 +1282,15 @@ def rebuild(task_name: str) -> None:
     default=False,
     help="Show resolved entries alongside open ones (default: open only).",
 )
-def needs(resolve_id: str | None, show_all: bool) -> None:
+@click.option(
+    "--blockers-only",
+    "blockers_only",
+    is_flag=True,
+    default=False,
+    help="Show only blocker categories (permission-change, config-edit, manual-intervention, approval). "
+         "Excludes observation entries.",
+)
+def needs(resolve_id: str | None, show_all: bool, blockers_only: bool) -> None:
     """Show or resolve human-action-needed entries across all agents.
 
     Reads memory/*/needs.md and displays open items grouped by category,
@@ -1338,12 +1377,33 @@ def needs(resolve_id: str | None, show_all: bool) -> None:
     label = "open item" if open_count == 1 else "open items"
     console.print(f"\n[bold]Factory Needs[/bold] — [yellow]{open_count}[/yellow] {label}\n")
 
-    # Display in canonical category order, then any unrecognised categories
-    known_keys = [k for k, _ in _CATEGORY_DISPLAY_ORDER]
-    extra_keys = [k for k in categories if k not in known_keys]
-    ordered_keys = known_keys + extra_keys
+    def _print_entry(entry: dict) -> None:
+        age = _format_age(entry["created"])
+        eid = entry["id"]
+        agent_label = entry["agent"]
+        blocked = entry["blocked"] or "(no description)"
+        status_tag = (
+            ""
+            if entry["status"] == "open"
+            else f" [dim]\\[{entry['status']}][/dim]"
+        )
+        console.print(
+            f"  [cyan]{eid:<44}[/cyan]  [dim]\\[{agent_label}, {age}][/dim]{status_tag}"
+        )
+        console.print(f"    {blocked}")
 
-    for cat_key in ordered_keys:
+    # Separate observation entries from blocker entries.
+    # Observations go in their own section at the bottom; --blockers-only suppresses them.
+    _OBSERVATION_CATEGORY = "observation"
+    observation_entries = categories.get(_OBSERVATION_CATEGORY, [])
+    observation_entries.sort(key=lambda e: e["created"] or "9999")
+
+    # Blocker display: known categories in canonical order, then unknown extras
+    known_blocker_keys = [k for k, _ in _CATEGORY_DISPLAY_ORDER]
+    extra_keys = [k for k in categories if k not in known_blocker_keys and k != _OBSERVATION_CATEGORY]
+    ordered_blocker_keys = known_blocker_keys + extra_keys
+
+    for cat_key in ordered_blocker_keys:
         if cat_key not in categories:
             continue
         cat_entries = categories[cat_key]
@@ -1353,20 +1413,141 @@ def needs(resolve_id: str | None, show_all: bool) -> None:
         )
         console.print(f"[bold]{display_name}[/bold] ({len(cat_entries)}):")
         for entry in cat_entries:
-            age = _format_age(entry["created"])
-            eid = entry["id"]
-            agent = entry["agent"]
-            blocked = entry["blocked"] or "(no description)"
-            status_tag = (
-                ""
-                if entry["status"] == "open"
-                else f" [dim]\\[{entry['status']}][/dim]"
-            )
-            console.print(
-                f"  [cyan]{eid:<44}[/cyan]  [dim]\\[{agent}, {age}][/dim]{status_tag}"
-            )
-            console.print(f"    {blocked}")
+            _print_entry(entry)
         console.print()
+
+    # Observations section — separate display, suppressed by --blockers-only
+    if not blockers_only and observation_entries:
+        console.print(f"[bold]Observations[/bold] ({len(observation_entries)}):")
+        for entry in observation_entries:
+            _print_entry(entry)
+        console.print()
+
+
+@main.command()
+@click.argument("agent_name", required=False, metavar="AGENT")
+def reflect(agent_name: str | None) -> None:
+    """Invoke agents with a reflection prompt.
+
+    Agents examine their own configuration, memory, and pipeline state,
+    then write observations to memory/{agent}/needs.md.
+
+    If AGENT is omitted, all agents are invoked sequentially in pipeline
+    order: researcher, spec, builder, verifier, librarian, operator, reviewer.
+
+    \b
+    Exit codes:
+      0   All invoked agents completed (some may have written NO_REPLY)
+      1   Invalid agent name specified
+      2   All invoked agents failed (none completed successfully)
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    workspace = config.workspace
+
+    # Determine which agents to invoke
+    if agent_name is not None:
+        if agent_name not in config.agents:
+            console.print(f"Unknown agent: {agent_name}")
+            sys.exit(1)
+        agents_to_run = [agent_name]
+    else:
+        # All agents in pipeline order, limited to those present in config
+        agents_to_run = [a for a in PIPELINE_ORDER if a in config.agents]
+
+    # Snapshot needs entry IDs before the reflection pass for delta counting
+    pre_ids = _snapshot_needs_ids(workspace)
+
+    from .llm import run_agent
+    from .run_log import RunLogger
+
+    n_ran = 0
+    failed: list[str] = []
+
+    for name in agents_to_run:
+        agent_cfg = config.agents[name]
+        console.print(f"\n[bold]Reflecting:[/bold] {name} ({agent_cfg.model})")
+
+        # Build the agent's own YAML block from agents.yaml
+        agent_yaml = _agent_yaml_block(workspace, name)
+
+        # Optionally load the shared/agent-reflection skill to include inline
+        reflection_skill_path = (
+            workspace / "skills" / "shared" / "agent-reflection" / "SKILL.md"
+        )
+        skill_block = ""
+        if reflection_skill_path.exists():
+            skill_block = "\n\n" + reflection_skill_path.read_text()
+
+        reflection_prompt = (
+            "This is a reflection pass, not a heartbeat. You are being asked to examine "
+            "yourself — your configuration, your recent work, your place in the pipeline — "
+            "and surface observations for the human.\n\n"
+            "Your current configuration from agents.yaml:\n"
+            "---\n"
+            f"{agent_yaml}"
+            "---\n"
+            f"{skill_block}\n\n"
+            f"Load the `shared/agent-reflection` skill and follow its instructions. "
+            f"Write your observations to memory/{name}/needs.md using the "
+            "human-action-needed format with the appropriate category. "
+            "If you have nothing to observe, write NO_REPLY and exit."
+        )
+
+        run_logger = RunLogger(
+            workspace=workspace,
+            agent_name=name,
+            trigger="reflection",
+            model=agent_cfg.model,
+        )
+
+        try:
+            result = run_agent(
+                config=config,
+                agent_config=agent_cfg,
+                message=reflection_prompt,
+                is_heartbeat=False,
+                run_logger=run_logger,
+            )
+            if result.strip().upper() == "NO_REPLY":
+                console.print(f"  [dim]NO_REPLY — no observations.[/dim]")
+            else:
+                console.print(f"  [dim]Agent completed.[/dim]")
+            n_ran += 1
+        except Exception as e:
+            console.print(f"  [red]Failed:[/red] {e}")
+            failed.append(name)
+
+    # Snapshot needs entry IDs after the reflection pass and compute delta
+    post_ids = _snapshot_needs_ids(workspace)
+    new_count = len(post_ids - pre_ids)
+
+    # Summary output
+    total = n_ran + len(failed)
+    console.print()
+    if failed:
+        fail_str = ", ".join(failed)
+        console.print(
+            f"Reflection complete — {total} agents ran "
+            f"({len(failed)} failed: {fail_str}), "
+            f"{new_count} new observations written."
+        )
+    else:
+        console.print(
+            f"Reflection complete — {total} agents ran, "
+            f"{new_count} new observations written."
+        )
+
+    if new_count > 0:
+        console.print("\nRun `factory needs` to review.")
+
+    # Exit code 2 if every invoked agent failed
+    if failed and n_ran == 0:
+        sys.exit(2)
 
 
 @main.group()

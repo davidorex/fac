@@ -11,6 +11,8 @@ Write a needs entry when you encounter a blocker that:
 - Requires a manual human action outside the pipeline (delete files, set up external service, approve a destructive operation)
 - Cannot be worked around by existing runtime mechanisms (`factory cleanup-specs`, `factory rebuild`, `factory resolve`)
 
+Write an `observation` entry (non-blocking) during a reflection pass when you notice friction, misalignment, or improvement opportunities in your own configuration or behavior.
+
 Do NOT write a needs entry for:
 - Routine pipeline work another agent handles (write a research request or spec instead)
 - Issues you can resolve through the normal pipeline
@@ -24,12 +26,12 @@ Write to `memory/{your-agent-name}/needs.md`. Entries are appended; the file is 
 ## {agent}-{kebab-case-description}
 - status: open
 - created: {ISO 8601 timestamp}
-- category: {permission-change | config-edit | manual-intervention | approval}
-- blocked: {what you cannot do because of this blocker}
+- category: {permission-change | config-edit | manual-intervention | approval | observation}
+- blocked: {what you cannot do, or what friction you observe}
 - context: {which task, which run, what was attempted}
 
 ### Exact Change
-{the literal text, YAML block, command, or step the human needs to execute}
+{the literal text, YAML block, command, step, or suggested improvement the human needs to review}
 ```
 
 ## Deduplication
@@ -44,7 +46,8 @@ Before writing, check your own `memory/{agent}/needs.md` for an existing open en
 | `config-edit` | A READ-ONLY config file needs modification |
 | `manual-intervention` | One-time human action outside the codebase |
 | `approval` | Proposed action requires human sign-off before proceeding |
+| `observation` | Non-blocking feedback during a reflection pass — friction, misalignment, or improvement opportunity |
 
 ## After Writing
 
-Note the needs entry in your daily log. The human runs `factory needs` to see all open entries and `factory needs --resolve {id}` after taking action.
+Note the needs entry in your daily log. The human runs `factory needs` to see all open entries and `factory needs --resolve {id}` after taking action. Observations appear in a separate section in `factory needs` output and can be hidden with `--blockers-only`.
