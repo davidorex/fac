@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -132,6 +134,31 @@ def run_spec_pipeline_cleanup(workspace: Path, dry_run: bool = False) -> list[st
                 # for a higher-priority downstream.
                 stage_files[upstream_idx].discard(name)
 
+    # Check for orphaned rebuild briefs in specs/ready/.
+    # A rebuild brief is stale when: the brief exists in ready/ AND the
+    # corresponding spec has been removed from ready/ (Builder processed it).
+    # This is indicated by: {name}.rebuild.md present, {name}.md absent
+    # from ready/, and {name}.md present in archive (confirms build cycle ran).
+    ready_dir = stages[2]   # specs/ready
+    archive_names = stage_files[3]  # filenames present in specs/archive
+    ready_names = stage_files[2]    # filenames currently remaining in specs/ready
+
+    if ready_dir.exists():
+        for brief_file in sorted(ready_dir.glob("*.rebuild.md")):
+            # Derive the spec name: strip .rebuild.md suffix
+            spec_filename = brief_file.name[: -len(".rebuild.md")] + ".md"
+            spec_in_ready = spec_filename in ready_names
+            spec_archived = spec_filename in archive_names
+            if not spec_in_ready and spec_archived:
+                log_line = (
+                    f"Cleaned stale rebuild brief:"
+                    f" {brief_file.relative_to(workspace)}"
+                    f" (spec no longer in ready/ and is archived)"
+                )
+                log_lines.append(log_line)
+                if not dry_run and brief_file.exists():
+                    brief_file.unlink()
+
     return log_lines
 
 
@@ -207,6 +234,103 @@ def extract_failure_learnings(workspace: Path) -> list[str]:
         )
 
     return log_lines
+
+
+def _extract_section(text: str, heading: str) -> str | None:
+    """Extract the body of a Markdown ## section from *text*.
+
+    Returns the content between *heading* (verbatim, including the ``##``)
+    and the next ``##``-level heading or end of file, stripped of leading
+    and trailing whitespace.  Returns ``None`` if the heading is not found.
+    """
+    pattern = rf"^{re.escape(heading)}\s*\n(.*?)(?=^## |\Z)"
+    match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def rebuild_task(workspace: Path, task_name: str) -> tuple[int, str]:
+    """Execute the rebuild transition for a failed task.
+
+    Validates prerequisites, copies the archived spec back to ``specs/ready/``,
+    versions the failure report, and writes a rebuild brief that captures
+    Verifier's remediation guidance from the ``## Path to Resolution``
+    section (with fallbacks to ``## Summary`` and full-text if absent).
+
+    Returns ``(exit_code, message)``:
+
+    - ``0`` — success; *message* is a multi-line summary of created/renamed files
+    - ``1`` — missing prerequisite; *message* names the missing file(s)
+    - ``2`` — spec already in ``specs/ready/``; *message* is a warning string
+    """
+    archive_spec = workspace / "specs" / "archive" / f"{task_name}.md"
+    failed_report = workspace / "tasks" / "failed" / f"{task_name}.md"
+    ready_spec = workspace / "specs" / "ready" / f"{task_name}.md"
+
+    # Exit 2: a rebuild or first build is already in progress
+    if ready_spec.exists():
+        return (
+            2,
+            f"Spec already in specs/ready/ — rebuild or first build may be in progress.",
+        )
+
+    # Exit 1: missing prerequisites
+    missing = []
+    if not archive_spec.exists():
+        missing.append(f"specs/archive/{task_name}.md")
+    if not failed_report.exists():
+        missing.append(f"tasks/failed/{task_name}.md")
+    if missing:
+        return 1, f"Missing required files: {', '.join(missing)}"
+
+    # Read failure report before renaming
+    failure_text = failed_report.read_text()
+
+    # Version the failure report (find next available N)
+    failed_dir = workspace / "tasks" / "failed"
+    n = 1
+    while (failed_dir / f"{task_name}.v{n}.md").exists():
+        n += 1
+    versioned_report = failed_dir / f"{task_name}.v{n}.md"
+    failed_report.rename(versioned_report)
+
+    # Copy archived spec to ready (archive remains unchanged — terminal)
+    shutil.copy2(archive_spec, ready_spec)
+
+    # Extract "What to Fix" — priority order: Path to Resolution → Summary → full text
+    what_to_fix = _extract_section(failure_text, "## Path to Resolution")
+    if what_to_fix is None:
+        what_to_fix = _extract_section(failure_text, "## Summary")
+    if what_to_fix is None:
+        what_to_fix = failure_text.strip()
+
+    # Extract satisfaction score (looks for N/10 pattern inside Satisfaction Score section)
+    score_section = _extract_section(failure_text, "## Satisfaction Score")
+    if score_section is not None:
+        score_match = re.search(r"\d+/10", score_section)
+        prior_score = score_match.group(0) if score_match else score_section[:50].strip()
+    else:
+        prior_score = "unknown"
+
+    # Write rebuild brief
+    versioned_rel = versioned_report.relative_to(workspace)
+    rebuild_brief_path = workspace / "specs" / "ready" / f"{task_name}.rebuild.md"
+    rebuild_brief_text = (
+        f"# Rebuild Brief: {task_name}\n\n"
+        f"prior_failure: {versioned_rel}\n"
+        f"prior_score: {prior_score}\n\n"
+        f"## What to Fix\n"
+        f"{what_to_fix}\n"
+    )
+    rebuild_brief_path.write_text(rebuild_brief_text)
+
+    summary = (
+        f"Spec placed:      specs/ready/{task_name}.md\n"
+        f"Rebuild brief:    specs/ready/{task_name}.rebuild.md\n"
+        f"Versioned failure: {versioned_rel}"
+    )
+    return 0, summary
 
 
 @click.group()
@@ -549,6 +673,70 @@ def cleanup_specs_cmd(dry_run: bool) -> None:
         # Replace the leading "Cleaned" with the appropriate prefix for dry-run
         display = line.replace("Cleaned stale spec:", f"{prefix}:")
         console.print(f"  {display}")
+
+
+@main.command()
+@click.argument("task_name")
+def rebuild(task_name: str) -> None:
+    """Trigger a rebuild for a failed task.
+
+    Copies the archived spec back to specs/ready/, versions the active
+    failure report to tasks/failed/{task-name}.v{N}.md, and writes a
+    rebuild brief at specs/ready/{task-name}.rebuild.md containing
+    Verifier's remediation guidance.
+
+    Builder will pick up both files on its next run, read the rebuild
+    brief, and modify the existing artifacts rather than building from
+    scratch.
+
+    \b
+    Exit codes:
+      0  Rebuild triggered successfully.
+      1  Missing specs/archive/{task-name}.md or tasks/failed/{task-name}.md.
+      2  Spec already in specs/ready/ — rebuild or first build in progress.
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    exit_code, message = rebuild_task(config.workspace, task_name)
+
+    if exit_code == 0:
+        console.print(f"[green]Rebuild triggered:[/green] {task_name}")
+        for line in message.splitlines():
+            console.print(f"  {line}")
+        # Commit the state transition
+        workspace = config.workspace
+        subprocess.run(
+            ["git", "add",
+             f"specs/ready/{task_name}.md",
+             f"specs/ready/{task_name}.rebuild.md",
+             f"tasks/failed/"],
+            cwd=workspace,
+            capture_output=True,
+        )
+        result = subprocess.run(
+            ["git", "commit", "-m",
+             f"Trigger rebuild: {task_name}\n\n"
+             f"Copied specs/archive/{task_name}.md → specs/ready/{task_name}.md. "
+             f"Versioned failure report. Wrote rebuild brief with Verifier "
+             f"remediation guidance for Builder intake."],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            console.print(f"  [dim]State committed to git.[/dim]")
+        else:
+            console.print(f"  [yellow]Warning:[/yellow] git commit failed: {result.stderr.strip()}")
+    elif exit_code == 1:
+        console.print(f"[red]Error:[/red] {message}")
+        sys.exit(1)
+    elif exit_code == 2:
+        console.print(f"[yellow]Warning:[/yellow] {message}")
+        sys.exit(2)
 
 
 if __name__ == "__main__":
