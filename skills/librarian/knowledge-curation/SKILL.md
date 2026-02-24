@@ -5,7 +5,7 @@ description: How to review proposed skills, curate shared memory, and detect pat
 
 ## Reviewing Proposed Skills
 
-When you find new files in `skills/proposed/`:
+On every heartbeat, check `skills/proposed/` for pending skill files. This is your primary intake queue — agents propose skills here and depend on you to review and promote them. If `skills/proposed/` has entries, reviewing them is your first priority.
 
 1. Read the proposed SKILL.md
 2. Check: Is it general enough? A skill about one specific API endpoint is too narrow. A skill about "how to evaluate REST APIs" is useful.
@@ -26,7 +26,7 @@ Scan daily logs across agents for repeated workarounds. If agents keep doing the
 ## Memory Hygiene
 
 - Daily logs older than 7 days: scan for anything worth promoting to MEMORY.md or KNOWLEDGE.md, then archive
-- KNOWLEDGE.md: check for contradictions, outdated facts, redundancies
+- KNOWLEDGE.md: check for contradictions, outdated facts, redundancies. But also: if KNOWLEDGE.md is empty or sparse relative to the volume of completed work in `tasks/verified/` and `specs/archive/`, populating it is the priority. Survey verified tasks and archived specs to extract conventions, patterns, and operational facts that belong in shared knowledge. An empty KNOWLEDGE.md with 12 verified tasks means curation hasn't happened yet — not that there's nothing to curate.
 - PROJECTS.md: update project statuses based on recent task movements
 
 ## Using the Universe

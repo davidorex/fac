@@ -1,0 +1,5 @@
+agent: researcher
+model: claude-opus-4-6
+run_id: 20260224-215626-researcher
+timestamp: '2026-02-24T21:56:26.057999'
+trigger: heartbeat
