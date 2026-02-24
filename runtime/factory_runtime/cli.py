@@ -14,7 +14,9 @@ from typing import Optional
 
 import click
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from .config import find_workspace, load_config
 from .run_log import RunLogger
@@ -51,41 +53,125 @@ PIPELINE_ORDER: list[str] = [
 ]
 
 
-def print_pipeline_next(agent: str, workspace: Path) -> None:
-    """Print pipeline next-step guidance after a successful agent run.
+def _count_dir(workspace: Path, rel_path: str) -> tuple[int, list[str]]:
+    """Count non-dotfile items in a directory. Returns (count, [names])."""
+    d = workspace / rel_path
+    if not d.exists():
+        return 0, []
+    items = sorted(f for f in d.iterdir() if not f.name.startswith("."))
+    return len(items), [f.stem for f in items[:5]]
 
-    Checks each downstream directory for the given agent and prints lines
-    for directories that contain non-dotfile items.  If no downstream
-    directories have work, prints an idle message instead.
 
-    Called only on successful completion (not on exception).  Called even
-    when the agent responded NO_REPLY, because work may have been waiting
-    from a previous run.
+def _model_short(model: str) -> str:
+    """Shorten model names for display: claude-opus-4-6 → opus."""
+    for prefix in ("claude-", "claude_"):
+        model = model.removeprefix(prefix)
+    # Strip version suffixes like -4-6, -4-5
+    model = re.sub(r"-\d+-\d+$", "", model)
+    return model
+
+
+def _format_age_short(ts_str: str) -> str:
+    """Parse a run timestamp and return age string."""
+    try:
+        ts = datetime.strptime(ts_str, "%Y%m%d-%H%M%S")
+    except ValueError:
+        return ts_str
+
+    delta = datetime.now() - ts
+    if delta.total_seconds() < 3600:
+        return f"{int(delta.total_seconds() / 60)}m ago"
+    elif delta.total_seconds() < 86400:
+        return f"{int(delta.total_seconds() / 3600)}h ago"
+    else:
+        return f"{int(delta.days)}d ago"
+
+
+def _agent_last_run(runs_dir: Path, agent_name: str) -> tuple[str, bool]:
+    """Get last run age and NO_REPLY status for an agent."""
+    if not runs_dir.exists():
+        return "never", False
+
+    agent_runs = sorted(
+        [d for d in runs_dir.iterdir() if d.is_dir() and d.name.endswith(f"-{agent_name}")],
+        reverse=True,
+    )
+    if not agent_runs:
+        return "never", False
+
+    run_name = agent_runs[0].name
+    ts_str = run_name.rsplit(f"-{agent_name}", 1)[0]
+
+    age = _format_age_short(ts_str)
+
+    no_reply = False
+    outcome_path = agent_runs[0] / "outcome.md"
+    if outcome_path.exists():
+        content = outcome_path.read_text()
+        if "NO_REPLY" in content:
+            no_reply = True
+
+    return age, no_reply
+
+
+def _compute_next_actions(workspace: Path) -> list[str]:
+    """Compute actionable next steps based on pipeline state.
+
+    Returns a list of command strings the operator should run, ordered
+    by priority.
     """
-    downstreams = PIPELINE_DOWNSTREAM.get(agent, [])
-    active: list[tuple[str, int, Optional[str]]] = []
+    actions: list[str] = []
 
-    for dir_rel, command in downstreams:
-        dir_path = workspace / dir_rel
-        if dir_path.exists():
-            items = [f for f in dir_path.iterdir() if not f.name.startswith(".")]
-            if items:
-                active.append((dir_rel, len(items), command))
+    # Decisions awaiting operator (highest priority)
+    dec_count, dec_names = _count_dir(workspace, "tasks/decisions")
+    if dec_count > 0:
+        for name in dec_names:
+            # Check if any entries are awaiting-operator
+            dec_file = workspace / "tasks" / "decisions" / f"{name}.md"
+            if dec_file.exists():
+                text = dec_file.read_text()
+                if "awaiting-operator" in text:
+                    actions.append(f"factory decide {name}")
+
+    # Needs awaiting operator
+    needs = parse_needs_entries(workspace)
+    open_needs = [e for e in needs if e["status"] == "open" and e["category"] != "observation"]
+    if open_needs:
+        actions.append("factory needs")
+
+    # Pipeline flow: in priority order
+    inbox_count, _ = _count_dir(workspace, "specs/inbox")
+    drafting_count, _ = _count_dir(workspace, "specs/drafting")
+    ready_count, _ = _count_dir(workspace, "specs/ready")
+    research_count, _ = _count_dir(workspace, "tasks/research")
+    review_count, _ = _count_dir(workspace, "tasks/review")
+    failed_count, _ = _count_dir(workspace, "tasks/failed")
+
+    if research_count > 0:
+        actions.append("factory run researcher")
+    if inbox_count > 0 or drafting_count > 0:
+        actions.append("factory run spec")
+    if ready_count > 0:
+        actions.append("factory run builder")
+    if review_count > 0:
+        actions.append("factory run verifier")
+    if failed_count > 0:
+        actions.append("factory rebuild TASK_NAME")
+
+    return actions
+
+
+def print_pipeline_next(agent: str, workspace: Path) -> None:
+    """Print pipeline next-step guidance after a successful agent run."""
+    actions = _compute_next_actions(workspace)
 
     console.print()
-    if not active:
+    if not actions:
         console.print("  [dim]Pipeline idle — nothing waiting downstream.[/dim]")
     else:
-        for dir_rel, count, command in active:
-            if command:
-                console.print(
-                    f"  {dir_rel} has [yellow]{count}[/yellow] item(s)"
-                    f" \u2014 next: [bold]{command}[/bold]"
-                )
-            else:
-                console.print(
-                    f"  {dir_rel} has [yellow]{count}[/yellow] item(s)"
-                )
+        console.print("  [bold]Next:[/bold]")
+        for action in actions[:3]:
+            console.print(f"    → [bold]{action}[/bold]")
 
 
 def run_spec_pipeline_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
@@ -1094,7 +1180,7 @@ def run(agent: str, task: str | None, message: str | None) -> None:
 
 @main.command()
 def status() -> None:
-    """Show all agents, last run time, and pipeline status."""
+    """Show factory status: agents, pipeline, and next actions."""
     try:
         config = load_config()
     except FileNotFoundError as e:
@@ -1102,93 +1188,96 @@ def status() -> None:
         sys.exit(1)
 
     workspace = config.workspace
-
-    # Agent status table
-    table = Table(title="Factory Agents")
-    table.add_column("Agent", style="bold")
-    table.add_column("Model")
-    table.add_column("Last Run")
-    table.add_column("Heartbeat")
-    table.add_column("Shell")
-
     runs_dir = workspace / "runs"
+
+    # ── Agents ──
+    lines: list[str] = []
     for name, agent in config.agents.items():
-        # Find most recent run for this agent
-        last_run = "never"
-        if runs_dir.exists():
-            agent_runs = sorted(
-                [d for d in runs_dir.iterdir() if d.is_dir() and d.name.endswith(f"-{name}")],
-                reverse=True,
-            )
-            if agent_runs:
-                run_name = agent_runs[0].name
-                # Parse timestamp from run ID (YYYYMMDD-HHMMSS-agent)
-                ts_str = run_name.rsplit(f"-{name}", 1)[0]
-                try:
-                    ts = datetime.strptime(ts_str, "%Y%m%d-%H%M%S")
-                    delta = datetime.now() - ts
-                    if delta.total_seconds() < 3600:
-                        last_run = f"{int(delta.total_seconds() / 60)}m ago"
-                    elif delta.total_seconds() < 86400:
-                        last_run = f"{int(delta.total_seconds() / 3600)}h ago"
-                    else:
-                        last_run = f"{int(delta.days)}d ago"
+        age, no_reply = _agent_last_run(runs_dir, name)
+        model = _model_short(agent.model)
+        dot = "[green]●[/green]" if age != "never" else "[dim]○[/dim]"
+        suffix = "  [dim](idle)[/dim]" if no_reply else ""
+        lines.append(f"  {dot} {name:<14} {model:<8} {age}{suffix}")
 
-                    # Check outcome
-                    outcome_path = agent_runs[0] / "outcome.md"
-                    if outcome_path.exists():
-                        content = outcome_path.read_text()
-                        if "NO_REPLY" in content:
-                            last_run += " (NO_REPLY)"
-                except ValueError:
-                    last_run = run_name
+    agent_block = "\n".join(lines)
 
-        table.add_row(name, agent.model, last_run, agent.heartbeat, agent.shell_access)
-
-    console.print(table)
-
-    # Pipeline status
-    console.print("\n[bold]Pipeline:[/bold]")
+    # ── Pipeline (non-empty only) ──
     pipeline_dirs = [
-        ("specs/inbox", "specs/inbox"),
-        ("specs/drafting", "specs/drafting"),
-        ("specs/ready", "specs/ready"),
-        ("tasks/building", "tasks/building"),
-        ("tasks/review", "tasks/review"),
-        ("tasks/verified", "tasks/verified"),
-        ("tasks/failed", "tasks/failed"),
-        ("tasks/decisions", "tasks/decisions"),
-        ("tasks/resolved", "tasks/resolved"),
+        ("specs/inbox", "inbox"),
+        ("specs/drafting", "drafting"),
+        ("specs/ready", "ready"),
+        ("tasks/research", "research"),
+        ("tasks/building", "building"),
+        ("tasks/review", "review"),
+        ("tasks/verified", "verified"),
+        ("tasks/failed", "failed"),
+        ("tasks/decisions", "decisions"),
     ]
 
-    for label, dir_path in pipeline_dirs:
-        full_path = workspace / dir_path
-        if full_path.exists():
-            items = [f for f in full_path.iterdir() if not f.name.startswith(".")]
-            count = len(items)
-            names = ", ".join(f.name for f in items[:3])
+    pipeline_lines: list[str] = []
+    for rel_path, label in pipeline_dirs:
+        count, names = _count_dir(workspace, rel_path)
+        if count > 0:
+            name_str = ", ".join(names[:3])
             if count > 3:
-                names += f", ... (+{count - 3})"
-            if count > 0:
-                console.print(f"  {label}: [yellow]{count}[/yellow] ({names})")
-            else:
-                console.print(f"  {label}: [dim]0[/dim]")
-        else:
-            console.print(f"  {label}: [dim]—[/dim]")
+                name_str += f" (+{count - 3})"
+            pipeline_lines.append(
+                f"  [yellow]▸[/yellow] {label:<14} [yellow]{count}[/yellow]  {name_str}"
+            )
 
-    # Scenario Coverage
-    cov = _scenario_coverage(workspace)
-    console.print("\n[bold]Scenario Coverage:[/bold]")
-    console.print(f"  Directories: {cov['directories']}")
-    console.print(f"  Scenario files: {cov['total_files']}")
-    meta_label = "[green]✓[/green]" if cov["meta_exists"] else "[dim]absent[/dim]"
-    console.print(f"  Meta-scenario: {meta_label}")
-    if cov["warn"]:
-        console.print(
-            "  [yellow]Warning:[/yellow] Tasks exist in review/verified but "
-            "scenarios/meta/factory-itself.md is absent. "
-            "Run `factory scenario init-meta`."
-        )
+    # Decisions and needs inline
+    dec_count, _ = _count_dir(workspace, "tasks/decisions")
+    needs_entries = parse_needs_entries(workspace)
+    open_needs = [e for e in needs_entries if e["status"] == "open" and e["category"] != "observation"]
+    open_observations = [e for e in needs_entries if e["status"] == "open" and e["category"] == "observation"]
+
+    status_notes: list[str] = []
+    if dec_count > 0:
+        # Count hard gates specifically
+        hard_count = 0
+        auto_count = 0
+        for dec_file in sorted((workspace / "tasks" / "decisions").glob("*.md")):
+            text = dec_file.read_text()
+            hard_count += text.count("awaiting-operator")
+            auto_count += text.count("auto-resolved")
+        if hard_count > 0:
+            status_notes.append(f"[yellow]{hard_count} decision(s) awaiting operator[/yellow]")
+        if auto_count > 0:
+            status_notes.append(f"[dim]{auto_count} auto-resolved[/dim]")
+    if open_needs:
+        status_notes.append(f"[yellow]{len(open_needs)} need(s) pending[/yellow]")
+    if open_observations:
+        status_notes.append(f"[dim]{len(open_observations)} observation(s)[/dim]")
+
+    if not pipeline_lines and not status_notes:
+        pipeline_block = "  [dim]Pipeline empty.[/dim]"
+    else:
+        parts = []
+        if pipeline_lines:
+            parts.append("\n".join(pipeline_lines))
+        if status_notes:
+            parts.append("  " + "  ".join(status_notes))
+        pipeline_block = "\n".join(parts)
+
+    # ── Next actions ──
+    actions = _compute_next_actions(workspace)
+    if actions:
+        next_lines = [f"  → [bold]{a}[/bold]" for a in actions[:3]]
+        if len(actions) > 3:
+            next_lines.append(f"  [dim]  ...and {len(actions) - 3} more[/dim]")
+        next_block = "\n".join(next_lines)
+    else:
+        next_block = "  [dim]Nothing to do.[/dim]"
+
+    # ── Render ──
+    output = Text.from_markup(
+        f"{agent_block}\n"
+        f"\n[bold]Pipeline[/bold]\n"
+        f"{pipeline_block}\n"
+        f"\n[bold]Next[/bold]\n"
+        f"{next_block}"
+    )
+    console.print(Panel(output, title="[bold]Factory[/bold]", border_style="dim"))
 
 
 @main.command()
