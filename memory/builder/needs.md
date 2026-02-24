@@ -1,5 +1,6 @@
 ## builder-reviewer-agents-yaml
-- status: open
+- status: resolved
+- resolved_at: 2026-02-24T14:37:10
 - created: 2026-02-24T11:00:00
 - category: config-edit
 - blocked: Reviewer agent definition is absent from agents.yaml — the self-review-loop spec was fully implemented (memory dirs, skills scaffolding) but agents.yaml is READ-ONLY and cannot be modified by any agent
