@@ -626,6 +626,104 @@ def resolve_need(workspace: Path, entry_id: str) -> tuple[int, str]:
     return 1, f"No open needs entry found with ID: {entry_id}"
 
 
+_META_SCENARIO_CONTENT = """\
+# Factory Meta-Scenario
+
+A solo developer with a new project idea should be able to describe it in 2-3 sentences, leave, and come back to find: a complete NLSpec they can review, a working implementation, a verification assessment, and a list of what the system learned from building it. The developer's only job is to approve the spec and approve the final result. Everything in between is the factory's problem.
+
+## Evaluation Guidance
+
+This is a directional criterion, not a pass/fail gate. The factory is not yet at meta-scenario fulfillment. When evaluating factory infrastructure changes, ask: does this change move the factory closer to or further from this scenario?
+
+- Closer: changes that increase pipeline autonomy, improve reliability, strengthen self-correction, reduce required human intervention for routine operations
+- Further: changes that add manual steps, create ambiguity in the pipeline, lose information between stages, or require human expertise to interpret agent output
+
+Each factory infrastructure task should be evaluated for directional alignment. Document the reasoning.
+
+## Source
+
+Blueprint line 586-589: "Write this into `scenarios/meta/factory-itself.md` on day one."
+"""
+
+_SCENARIO_TEMPLATE_CONTENT = """\
+# Scenario: [Title]
+
+<!-- Copy this file for each scenario. Name copies scenario-001.md, scenario-002.md, etc. -->
+<!-- Delete this _template.md file or leave it — it is excluded from scenario counts. -->
+
+## User Story
+
+[Describe a specific end-to-end user interaction. Who is the user? What do they want to accomplish? What do they do step by step? What do they see at each step?]
+
+## Expected Behavior
+
+[Describe the observable outcomes. What should happen at each step? Include both the happy path and edge cases this scenario tests.]
+
+## Why This Matters
+
+[What aspect of the spec does this scenario stress-test? What could go wrong if this scenario fails? What would a user feel if this scenario broke?]
+"""
+
+_SCENARIO_PROJECT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def check_scenario_warning(workspace: Path) -> str | None:
+    """Return a warning string when the meta-scenario file is absent, else None.
+
+    Used by the ``run`` command to warn before invoking Verifier when no
+    scenario holdouts have been initialised.
+    """
+    meta = workspace / "scenarios" / "meta" / "factory-itself.md"
+    if not meta.exists():
+        return (
+            "No scenario holdouts found. Verification will be spec-matching only. "
+            "Run `factory scenario init-meta` to create the meta-scenario."
+        )
+    return None
+
+
+def _scenario_coverage(workspace: Path) -> dict:
+    """Compute scenario coverage stats for ``factory status``.
+
+    Returns a dict with:
+        directories (int)   — number of subdirs under scenarios/
+        total_files (int)   — total scenario .md files (excl. _template.md, satisfaction.md)
+        meta_exists (bool)  — whether scenarios/meta/factory-itself.md exists
+        warn (bool)         — True if tasks need verification but meta is absent
+    """
+    scenarios_dir = workspace / "scenarios"
+    meta_path = workspace / "scenarios" / "meta" / "factory-itself.md"
+
+    directories = 0
+    total_files = 0
+    meta_exists = meta_path.exists()
+
+    if scenarios_dir.exists():
+        for sub in scenarios_dir.iterdir():
+            if sub.is_dir():
+                directories += 1
+                for f in sub.glob("*.md"):
+                    if f.name not in ("_template.md", "satisfaction.md"):
+                        total_files += 1
+
+    # Warn if tasks in review/verified but meta absent
+    warn = False
+    if not meta_exists:
+        for tasks_dir in [workspace / "tasks" / "review", workspace / "tasks" / "verified"]:
+            if tasks_dir.exists():
+                items = [f for f in tasks_dir.iterdir() if f.suffix == ".md"]
+                if items:
+                    warn = True
+                    break
+
+    return {
+        "directories": directories,
+        "total_files": total_files,
+        "meta_exists": meta_exists,
+        "warn": warn,
+    }
+
+
 @click.group()
 @click.pass_context
 def main(ctx: click.Context) -> None:
@@ -709,6 +807,12 @@ def run(agent: str, task: str | None, message: str | None) -> None:
     # Import and run
     from .llm import run_agent
     from .context import build_context_bar, estimate_tokens, MODEL_CONTEXT_WINDOWS
+
+    # Pre-verification warning: alert when scenario holdouts are absent
+    if agent == "verifier":
+        scenario_warn = check_scenario_warning(config.workspace)
+        if scenario_warn:
+            console.print(f"  [yellow]Warning:[/yellow] {scenario_warn}")
 
     try:
         result = run_agent(
@@ -840,6 +944,20 @@ def status() -> None:
                 console.print(f"  {label}: [dim]0[/dim]")
         else:
             console.print(f"  {label}: [dim]—[/dim]")
+
+    # Scenario Coverage
+    cov = _scenario_coverage(workspace)
+    console.print("\n[bold]Scenario Coverage:[/bold]")
+    console.print(f"  Directories: {cov['directories']}")
+    console.print(f"  Scenario files: {cov['total_files']}")
+    meta_label = "[green]✓[/green]" if cov["meta_exists"] else "[dim]absent[/dim]"
+    console.print(f"  Meta-scenario: {meta_label}")
+    if cov["warn"]:
+        console.print(
+            "  [yellow]Warning:[/yellow] Tasks exist in review/verified but "
+            "scenarios/meta/factory-itself.md is absent. "
+            "Run `factory scenario init-meta`."
+        )
 
 
 @main.command()
@@ -1249,6 +1367,144 @@ def needs(resolve_id: str | None, show_all: bool) -> None:
             )
             console.print(f"    {blocked}")
         console.print()
+
+
+@main.group()
+def scenario() -> None:
+    """Manage scenario holdout files for verification."""
+    pass
+
+
+@scenario.command(name="init-meta")
+def scenario_init_meta() -> None:
+    """Create the factory meta-scenario file at scenarios/meta/factory-itself.md.
+
+    Idempotent — running when the file already exists prints its path and exits
+    without modifying it, preserving any human edits.
+
+    \b
+    Exit code: 0 in all cases.
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    workspace = config.workspace
+    meta_dir = workspace / "scenarios" / "meta"
+    meta_file = meta_dir / "factory-itself.md"
+
+    if meta_file.exists():
+        console.print(f"Already exists: {meta_file.relative_to(workspace)}")
+        return
+
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    meta_file.write_text(_META_SCENARIO_CONTENT)
+    console.print(f"Created {meta_file.relative_to(workspace)}")
+
+
+@scenario.command(name="new")
+@click.argument("project_name")
+def scenario_new(project_name: str) -> None:
+    """Create a scenario template for PROJECT_NAME at scenarios/{project-name}/_template.md.
+
+    Idempotent — if the directory already exists, prints a message and does not
+    overwrite any files.  If the directory exists but _template.md is missing,
+    writes the template.
+
+    \b
+    Project name must match [a-z0-9][a-z0-9_-]* (lowercase, hyphens, underscores).
+    Exit code: 1 if project-name is invalid, 0 otherwise.
+    """
+    if not _SCENARIO_PROJECT_NAME_RE.match(project_name):
+        console.print(
+            f"[red]Error:[/red] Invalid project name '{project_name}'. "
+            "Must match [a-z0-9][a-z0-9_-]* (lowercase letters/digits, hyphens, underscores, "
+            "no leading special characters)."
+        )
+        sys.exit(1)
+
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    workspace = config.workspace
+    project_dir = workspace / "scenarios" / project_name
+    template_file = project_dir / "_template.md"
+
+    if project_dir.exists() and template_file.exists():
+        console.print(f"Already exists: scenarios/{project_name}/")
+        return
+
+    project_dir.mkdir(parents=True, exist_ok=True)
+    template_file.write_text(_SCENARIO_TEMPLATE_CONTENT)
+    console.print(f"Created scenarios/{project_name}/_template.md")
+
+
+@scenario.command(name="list")
+def scenario_list() -> None:
+    """List all scenario directories with file counts and satisfaction status.
+
+    \b
+    Columns: Name, Scenarios, Satisfaction
+    Exit code: 0 always.
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    workspace = config.workspace
+    scenarios_dir = workspace / "scenarios"
+
+    if not scenarios_dir.exists() or not any(scenarios_dir.iterdir()):
+        console.print(
+            "No scenario directories found. "
+            "Run `factory scenario init-meta` to create the meta-scenario."
+        )
+        return
+
+    subdirs = sorted(sub for sub in scenarios_dir.iterdir() if sub.is_dir())
+
+    if not subdirs:
+        console.print(
+            "No scenario directories found. "
+            "Run `factory scenario init-meta` to create the meta-scenario."
+        )
+        return
+
+    table = Table()
+    table.add_column("Name", style="bold")
+    table.add_column("Scenarios", justify="right")
+    table.add_column("Satisfaction")
+
+    for sub in subdirs:
+        # Display name: add [meta] label for the meta directory.
+        # Use \[meta] to prevent Rich from treating it as markup.
+        display_name = r"meta \[meta]" if sub.name == "meta" else sub.name
+
+        # Count .md files excluding _template.md and satisfaction.md
+        scenario_files = [
+            f for f in sub.glob("*.md")
+            if f.name not in ("_template.md", "satisfaction.md")
+        ]
+        count = len(scenario_files)
+
+        # Satisfaction: check for satisfaction.md and its modification date
+        sat_file = sub / "satisfaction.md"
+        if sat_file.exists():
+            mtime = datetime.fromtimestamp(sat_file.stat().st_mtime)
+            satisfaction = f"✓ ({mtime.strftime('%Y-%m-%d')})"
+        else:
+            satisfaction = "—"
+
+        table.add_row(display_name, str(count), satisfaction)
+
+    console.print(table)
 
 
 if __name__ == "__main__":
