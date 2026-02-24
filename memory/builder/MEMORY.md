@@ -14,3 +14,5 @@ If `specs/archive/{name}.md` already exists, rename the existing file to `specs/
 
 - `hello-world` — stdlib Python CLI greeting script, verified and in `tasks/verified/`
 - `spec-lifecycle` — behavioral convention establishing the spec archive protocol
+- `task-review-cleanup` — `run_task_review_cleanup` + `factory cleanup-tasks` in cli.py; in tasks/review/
+- `failed-task-lifecycle` — `tasks/resolved/`, `resolve_completed_failures`, `factory resolve` in cli.py; in tasks/review/
