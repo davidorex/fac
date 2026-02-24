@@ -162,6 +162,165 @@ def run_spec_pipeline_cleanup(workspace: Path, dry_run: bool = False) -> list[st
     return log_lines
 
 
+def run_task_review_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
+    """Remove stale files from tasks/review/ that exist in tasks/verified/ or tasks/failed/.
+
+    A task file in tasks/review/ is stale when an exact filename match exists
+    in tasks/verified/ or tasks/failed/ (the active, non-versioned slot).
+    Versioned failure reports (foo.v1.md) in tasks/failed/ are NOT treated as
+    matches — only the base filename foo.md counts.
+
+    Returns a list of log lines describing every deletion (or planned deletion
+    when dry_run=True).
+    """
+    review_dir = workspace / "tasks" / "review"
+    verified_dir = workspace / "tasks" / "verified"
+    failed_dir = workspace / "tasks" / "failed"
+
+    if not review_dir.exists():
+        return []
+
+    # Collect downstream filenames (exact, non-versioned)
+    verified_names: set[str] = (
+        {f.name for f in verified_dir.iterdir() if f.suffix == ".md"}
+        if verified_dir.exists()
+        else set()
+    )
+    # Only base (non-versioned) failure reports — exclude files matching *.v{N}.md
+    versioned_pattern = re.compile(r"\.v\d+\.md$")
+    failed_names: set[str] = (
+        {
+            f.name
+            for f in failed_dir.iterdir()
+            if f.suffix == ".md" and not versioned_pattern.search(f.name)
+        }
+        if failed_dir.exists()
+        else set()
+    )
+
+    log_lines: list[str] = []
+
+    for review_file in sorted(review_dir.glob("*.md")):
+        name = review_file.name
+        if name in verified_names:
+            downstream_label = "tasks/verified"
+        elif name in failed_names:
+            downstream_label = "tasks/failed"
+        else:
+            continue
+
+        log_line = (
+            f"Cleaned stale task: tasks/review/{name}"
+            f" (exists in {downstream_label})"
+        )
+        log_lines.append(log_line)
+        if not dry_run and review_file.exists():
+            review_file.unlink()
+
+    return log_lines
+
+
+def resolve_completed_failures(workspace: Path) -> list[str]:
+    """Move versioned and active failure reports to tasks/resolved/ after successful verification.
+
+    For each task in tasks/verified/, checks tasks/failed/ for:
+    - Active failure report: {task-name}.md
+    - Versioned failure reports: {task-name}.v{N}.md
+
+    Appends a ## Resolution section (resolved_by: rebuild) to each found file
+    before moving it to tasks/resolved/.
+
+    Returns a list of log lines describing every file moved.
+    """
+    verified_dir = workspace / "tasks" / "verified"
+    failed_dir = workspace / "tasks" / "failed"
+    resolved_dir = workspace / "tasks" / "resolved"
+
+    if not verified_dir.exists() or not failed_dir.exists():
+        return []
+
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+
+    log_lines: list[str] = []
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    for verified_file in sorted(verified_dir.glob("*.md")):
+        task_name = verified_file.stem
+        verified_rel = verified_file.relative_to(workspace)
+
+        resolution_section = (
+            "\n\n## Resolution\n"
+            f"- resolved_by: rebuild\n"
+            f"- resolved_at: {now}\n"
+            f"- verified_task: {verified_rel}\n"
+        )
+
+        # Collect: active report + all versioned reports
+        candidates: list[Path] = []
+        active = failed_dir / f"{task_name}.md"
+        if active.exists():
+            candidates.append(active)
+        candidates.extend(sorted(failed_dir.glob(f"{task_name}.v*.md")))
+
+        for failed_file in candidates:
+            dest = resolved_dir / failed_file.name
+            if dest.exists():
+                # Already resolved on a prior cycle — skip
+                continue
+            text = failed_file.read_text()
+            failed_file.write_text(text + resolution_section)
+            failed_file.rename(dest)
+            log_lines.append(
+                f"Resolved: tasks/failed/{failed_file.name}"
+                f" → tasks/resolved/{failed_file.name}"
+            )
+
+    return log_lines
+
+
+def resolve_task(workspace: Path, task_name: str, reason: str) -> tuple[int, str]:
+    """Move an active failure report (and any versioned reports) to tasks/resolved/.
+
+    Appends a ## Resolution section with resolved_by: manual and the provided reason.
+
+    Returns (exit_code, message):
+    - 0  — success; message is a multi-line summary of moved files
+    - 1  — no active failure report found in tasks/failed/ for task_name
+    """
+    failed_dir = workspace / "tasks" / "failed"
+    resolved_dir = workspace / "tasks" / "resolved"
+    active = failed_dir / f"{task_name}.md"
+
+    if not active.exists():
+        return 1, f"No failure report found: tasks/failed/{task_name}.md"
+
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    resolution_section = (
+        "\n\n## Resolution\n"
+        f"- resolved_by: manual\n"
+        f"- resolved_at: {now}\n"
+        f"- reason: {reason}\n"
+    )
+
+    moved: list[str] = []
+
+    # Active report first, then versioned
+    candidates: list[Path] = [active]
+    candidates.extend(sorted(failed_dir.glob(f"{task_name}.v*.md")))
+
+    for failed_file in candidates:
+        dest = resolved_dir / failed_file.name
+        text = failed_file.read_text()
+        failed_file.write_text(text + resolution_section)
+        failed_file.rename(dest)
+        moved.append(f"  tasks/failed/{failed_file.name} → tasks/resolved/{failed_file.name}")
+
+    summary = "\n".join(moved)
+    return 0, summary
+
+
 def extract_failure_learnings(workspace: Path) -> list[str]:
     """Extract generalizable learnings from Verifier failure reports.
 
@@ -349,7 +508,7 @@ def init(workspace: str | None) -> None:
     dirs = [
         "specs/inbox", "specs/drafting", "specs/ready", "specs/archive",
         "tasks/research", "tasks/research-done", "tasks/building",
-        "tasks/review", "tasks/verified", "tasks/failed", "tasks/maintenance",
+        "tasks/review", "tasks/verified", "tasks/failed", "tasks/resolved", "tasks/maintenance",
         "scenarios/meta",
         "skills/shared", "skills/proposed",
         "skills/researcher", "skills/spec", "skills/builder",
@@ -441,8 +600,17 @@ def run(agent: str, task: str | None, message: str | None) -> None:
         for line in cleanup_log:
             console.print(f"  [dim]{line}[/dim]")
 
-        # Post-execution: failure learning extraction (runs after verifier)
+        # Post-execution: task review cleanup (runs after every agent)
+        task_cleanup_log = run_task_review_cleanup(config.workspace)
+        for line in task_cleanup_log:
+            console.print(f"  [dim]{line}[/dim]")
+
+        # Post-execution: failure resolution and learning extraction (verifier only)
         if agent == "verifier":
+            resolve_log = resolve_completed_failures(config.workspace)
+            for line in resolve_log:
+                console.print(f"  [dim]{line}[/dim]")
+
             learning_log = extract_failure_learnings(config.workspace)
             for line in learning_log:
                 if line.startswith("Failure report") and "lacks" in line:
@@ -521,6 +689,7 @@ def status() -> None:
         ("tasks/review", "tasks/review"),
         ("tasks/verified", "tasks/verified"),
         ("tasks/failed", "tasks/failed"),
+        ("tasks/resolved", "tasks/resolved"),
     ]
 
     for label, dir_path in pipeline_dirs:
@@ -673,6 +842,82 @@ def cleanup_specs_cmd(dry_run: bool) -> None:
         # Replace the leading "Cleaned" with the appropriate prefix for dry-run
         display = line.replace("Cleaned stale spec:", f"{prefix}:")
         console.print(f"  {display}")
+
+
+@main.command(name="cleanup-tasks")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be cleaned without deleting.")
+def cleanup_tasks_cmd(dry_run: bool) -> None:
+    """Remove stale task files from tasks/review/ that have been verified or failed.
+
+    A tasks/review/ file is stale when the same filename exists in
+    tasks/verified/ or tasks/failed/ (active, non-versioned slot only).
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    log_lines = run_task_review_cleanup(config.workspace, dry_run=dry_run)
+
+    if not log_lines:
+        console.print("[dim]Task review is clean — no stale files found.[/dim]")
+        return
+
+    prefix = "[dry-run] Would clean" if dry_run else "Cleaned"
+    for line in log_lines:
+        display = line.replace("Cleaned stale task:", f"{prefix}:")
+        console.print(f"  {display}")
+
+
+@main.command()
+@click.argument("task_name")
+@click.option("--reason", required=True, help="How the failure was resolved.")
+def resolve(task_name: str, reason: str) -> None:
+    """Mark a failed task as resolved and move its report(s) to tasks/resolved/.
+
+    Moves tasks/failed/{task-name}.md (and any versioned .v{N}.md reports)
+    to tasks/resolved/, appending a ## Resolution section with the provided
+    reason.  Commits the state transition to git.
+
+    \b
+    Exit codes:
+      0  Task resolved successfully.
+      1  No failure report found in tasks/failed/ for {task-name}.
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    exit_code, message = resolve_task(config.workspace, task_name, reason)
+
+    if exit_code == 0:
+        console.print(f"[green]Resolved:[/green] {task_name}")
+        console.print(message)
+        workspace = config.workspace
+        subprocess.run(
+            ["git", "add", "tasks/failed/", "tasks/resolved/"],
+            cwd=workspace,
+            capture_output=True,
+        )
+        result = subprocess.run(
+            ["git", "commit", "-m",
+             f"Resolve failed task: {task_name}\n\n"
+             f"Moved tasks/failed/{task_name}.md (and any versioned reports) to "
+             f"tasks/resolved/. Reason: {reason}"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            console.print(f"  [dim]State committed to git.[/dim]")
+        else:
+            console.print(f"  [yellow]Warning:[/yellow] git commit failed: {result.stderr.strip()}")
+    elif exit_code == 1:
+        console.print(f"[red]Error:[/red] {message}")
+        sys.exit(1)
 
 
 @main.command()
