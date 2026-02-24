@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time as time_mod
 import yaml
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +53,32 @@ PIPELINE_DOWNSTREAM: dict[str, list[tuple[str, Optional[str]]]] = {
 PIPELINE_ORDER: list[str] = [
     "researcher", "spec", "builder", "verifier", "librarian", "operator", "reviewer",
 ]
+
+
+WHATSAPP_JID = "855718665780@s.whatsapp.net"
+
+
+def _send_whatsapp(workspace: Path, agent: str, summary: str, next_actions: list[str]) -> None:
+    """Send a WhatsApp notification via NanoClaw IPC after an agent run."""
+    notifications_dir = workspace / "notifications"
+    if not notifications_dir.exists():
+        return
+
+    next_lines = "\n".join(f"  → {a}" for a in next_actions[:3]) if next_actions else "  Pipeline idle"
+    text = f"*{agent}* completed\n\n{summary}\n\n*Next:*\n{next_lines}"
+
+    # Truncate for WhatsApp readability (phone screen)
+    if len(text) > 1500:
+        text = text[:1497] + "..."
+
+    msg = {
+        "type": "message",
+        "chatJid": WHATSAPP_JID,
+        "text": text,
+    }
+
+    filename = f"{int(time_mod.time() * 1000)}-{agent}-complete.json"
+    (notifications_dir / filename).write_text(json.dumps(msg, indent=2) + "\n")
 
 
 def _resolve_spec_file(workspace: Path, name: str) -> Path | None:
@@ -1206,6 +1234,17 @@ def run(agent: str, spec_name: str | None, task: str | None, message: str | None
                     console.print(f"  [yellow]Warning:[/yellow] {line}")
                 else:
                     console.print(f"  [dim]{line}[/dim]")
+
+        # Post-execution: WhatsApp notification (skip NO_REPLY heartbeats)
+        if result.strip().upper() != "NO_REPLY":
+            # Build a concise summary from the agent response
+            summary_lines = result.strip().split("\n")
+            # Take first ~500 chars as summary
+            summary = "\n".join(summary_lines)
+            if len(summary) > 500:
+                summary = summary[:497] + "..."
+            next_actions = _compute_next_actions(config.workspace)
+            _send_whatsapp(config.workspace, agent, summary, next_actions)
 
     except Exception as e:
         console.print(f"[red]Error during agent run:[/red] {e}")
