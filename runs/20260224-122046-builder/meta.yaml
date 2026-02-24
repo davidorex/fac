@@ -1,5 +1,0 @@
-agent: builder
-model: claude-sonnet-4-5
-run_id: 20260224-122046-builder
-timestamp: '2026-02-24T12:20:46.933810'
-trigger: heartbeat

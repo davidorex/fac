@@ -1,3 +1,0 @@
-# Outcome
-
-NO_REPLY

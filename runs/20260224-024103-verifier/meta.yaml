@@ -1,5 +1,0 @@
-agent: verifier
-model: claude-opus-4-6
-run_id: 20260224-024103-verifier
-timestamp: '2026-02-24T02:41:03.827988'
-trigger: heartbeat

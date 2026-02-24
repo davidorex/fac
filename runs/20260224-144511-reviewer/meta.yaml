@@ -1,5 +1,0 @@
-agent: reviewer
-model: claude-opus-4-6
-run_id: 20260224-144511-reviewer
-timestamp: '2026-02-24T14:45:11.088195'
-trigger: heartbeat
