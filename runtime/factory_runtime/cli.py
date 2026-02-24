@@ -28,6 +28,7 @@ PIPELINE_DOWNSTREAM: dict[str, list[tuple[str, Optional[str]]]] = {
     "spec": [
         ("specs/ready", "factory run builder"),
         ("tasks/research", "factory run researcher"),
+        ("tasks/decisions", "factory decide"),
     ],
     "researcher": [
         ("tasks/research-done", None),
@@ -165,6 +166,40 @@ def run_spec_pipeline_cleanup(workspace: Path, dry_run: bool = False) -> list[st
                 log_lines.append(log_line)
                 if not dry_run and brief_file.exists():
                     brief_file.unlink()
+
+    return log_lines
+
+
+def run_research_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
+    """Remove stale files from tasks/research/ that exist in tasks/research-done/.
+
+    A research request in tasks/research/ is stale when an exact filename match
+    exists in tasks/research-done/ (the completed deliverable).
+
+    Returns a list of log lines describing every deletion (or planned deletion
+    when dry_run=True).
+    """
+    research_dir = workspace / "tasks" / "research"
+    done_dir = workspace / "tasks" / "research-done"
+
+    if not research_dir.exists() or not done_dir.exists():
+        return []
+
+    done_names: set[str] = {
+        f.name for f in done_dir.iterdir() if f.suffix == ".md"
+    }
+
+    log_lines: list[str] = []
+
+    for request_file in sorted(research_dir.glob("*.md")):
+        if request_file.name in done_names:
+            log_line = (
+                f"Cleaned stale research request: tasks/research/{request_file.name}"
+                f" (exists in tasks/research-done/)"
+            )
+            log_lines.append(log_line)
+            if not dry_run:
+                request_file.unlink()
 
     return log_lines
 
@@ -771,7 +806,8 @@ def init(workspace: str | None) -> None:
     dirs = [
         "specs/inbox", "specs/drafting", "specs/ready", "specs/archive",
         "tasks/research", "tasks/research-done", "tasks/building",
-        "tasks/review", "tasks/verified", "tasks/failed", "tasks/resolved", "tasks/maintenance",
+        "tasks/review", "tasks/verified", "tasks/failed", "tasks/decisions",
+        "tasks/resolved", "tasks/maintenance",
         "scenarios/meta",
         "skills/shared", "skills/proposed",
         "skills/researcher", "skills/spec", "skills/builder",
@@ -874,6 +910,11 @@ def run(agent: str, task: str | None, message: str | None) -> None:
         for line in task_cleanup_log:
             console.print(f"  [dim]{line}[/dim]")
 
+        # Post-execution: research request cleanup (runs after every agent)
+        research_cleanup_log = run_research_cleanup(config.workspace)
+        for line in research_cleanup_log:
+            console.print(f"  [dim]{line}[/dim]")
+
         # Post-execution: failure resolution and learning extraction (verifier only)
         if agent == "verifier":
             resolve_log = resolve_completed_failures(config.workspace)
@@ -958,6 +999,7 @@ def status() -> None:
         ("tasks/review", "tasks/review"),
         ("tasks/verified", "tasks/verified"),
         ("tasks/failed", "tasks/failed"),
+        ("tasks/decisions", "tasks/decisions"),
         ("tasks/resolved", "tasks/resolved"),
     ]
 
@@ -1073,6 +1115,7 @@ def show_workspace() -> None:
             ("review", "tasks/review"),
             ("verified", "tasks/verified"),
             ("failed", "tasks/failed"),
+            ("decisions", "tasks/decisions"),
             ("maintenance", "tasks/maintenance"),
         ]),
         ("Skills", [
@@ -1150,6 +1193,32 @@ def cleanup_tasks_cmd(dry_run: bool) -> None:
     prefix = "[dry-run] Would clean" if dry_run else "Cleaned"
     for line in log_lines:
         display = line.replace("Cleaned stale task:", f"{prefix}:")
+        console.print(f"  {display}")
+
+
+@main.command(name="cleanup-research")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be cleaned without deleting.")
+def cleanup_research_cmd(dry_run: bool) -> None:
+    """Remove stale research requests that have completed deliverables.
+
+    A tasks/research/ file is stale when the same filename exists in
+    tasks/research-done/ (the completed brief).
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    log_lines = run_research_cleanup(config.workspace, dry_run=dry_run)
+
+    if not log_lines:
+        console.print("[dim]Research pipeline is clean — no stale requests found.[/dim]")
+        return
+
+    prefix = "[dry-run] Would clean" if dry_run else "Cleaned"
+    for line in log_lines:
+        display = line.replace("Cleaned stale research request:", f"{prefix}:")
         console.print(f"  {display}")
 
 
@@ -1265,6 +1334,239 @@ def rebuild(task_name: str) -> None:
     elif exit_code == 2:
         console.print(f"[yellow]Warning:[/yellow] {message}")
         sys.exit(2)
+
+
+def parse_decision_entries(decision_file: Path) -> list[dict]:
+    """Parse structured ambiguity entries from a tasks/decisions/ file.
+
+    Each entry starts with a ### heading and contains tagged fields
+    (status, reversibility, impact) and an Options section.
+
+    Returns a list of dicts with keys: id, status, reversibility, impact,
+    options, recommendation, context.
+    """
+    if not decision_file.exists():
+        return []
+
+    text = decision_file.read_text()
+    # Split on ### headings (level 3)
+    blocks = re.split(r"(?=^### )", text, flags=re.MULTILINE)
+    entries: list[dict] = []
+
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        heading_match = re.match(r"^### (.+)", block)
+        if not heading_match:
+            continue
+
+        entry_id = heading_match.group(1).strip()
+
+        def get_field(field_name: str, _block: str = block) -> str | None:
+            m = re.search(
+                rf"^- {re.escape(field_name)}:\s*(.+)$", _block, re.MULTILINE
+            )
+            return m.group(1).strip() if m else None
+
+        # Extract options section
+        options_match = re.search(
+            r"^(?:\*\*Options:\*\*|### Options)\s*\n(.*?)(?=^###|\*\*Recommendation|\Z)",
+            block, re.MULTILINE | re.DOTALL,
+        )
+        options_text = options_match.group(1).strip() if options_match else None
+
+        # Extract recommendation
+        rec_match = re.search(
+            r"\*\*Recommendation:\*\*\s*(.*?)(?=^###|\Z)",
+            block, re.MULTILINE | re.DOTALL,
+        )
+        recommendation = rec_match.group(1).strip() if rec_match else None
+
+        entries.append({
+            "id": entry_id,
+            "status": get_field("status") or "open",
+            "reversibility": get_field("reversibility") or "unknown",
+            "impact": get_field("impact") or "unknown",
+            "options": options_text,
+            "recommendation": recommendation,
+            "context": get_field("context"),
+        })
+
+    return entries
+
+
+def resolve_decision(
+    decision_file: Path, entry_id: str, answer: str
+) -> tuple[int, str]:
+    """Mark a decision entry as resolved with the operator's answer.
+
+    Returns (exit_code, message):
+    - 0 — success
+    - 1 — entry not found or already resolved
+    """
+    if not decision_file.exists():
+        return 1, f"Decision file not found: {decision_file}"
+
+    text = decision_file.read_text()
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    # Find the entry block and replace its status
+    pattern = re.compile(
+        rf"(### {re.escape(entry_id)}\n.*?)(- status:\s*\S+)",
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        return 1, f"No entry found: {entry_id}"
+
+    current_status = re.search(r"- status:\s*(\S+)", match.group(0))
+    if current_status and current_status.group(1) not in ("open", "awaiting-operator"):
+        return 1, f"Entry already resolved: {entry_id} (status: {current_status.group(1)})"
+
+    # Replace status and add answer + timestamp
+    new_status_block = (
+        f"- status: resolved\n"
+        f"- decided-by: operator\n"
+        f"- decided-at: {now}\n"
+        f"- answer: {answer}"
+    )
+    new_text = text[:match.start(2)] + new_status_block + text[match.end(2):]
+    decision_file.write_text(new_text)
+    return 0, f"Resolved: {entry_id} → {answer}"
+
+
+@main.command()
+@click.argument("spec_name", required=False)
+@click.option("--answer", "-a", type=str, help="Answer for a specific entry (use with --entry).")
+@click.option("--entry", "-e", type=str, help="Entry ID to resolve.")
+@click.option("--override", is_flag=True, default=False, help="Override an auto-resolved decision.")
+def decide(spec_name: str | None, answer: str | None, entry: str | None, override: bool) -> None:
+    """Show or resolve decision requests in tasks/decisions/.
+
+    Without arguments, lists all pending decisions across all specs.
+    With SPEC_NAME, shows decisions for that spec.
+    With --entry and --answer, resolves a specific decision.
+
+    \\b
+    Exit codes:
+      0  Success
+      1  Spec not found or entry not found
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    workspace = config.workspace
+    decisions_dir = workspace / "tasks" / "decisions"
+
+    if not decisions_dir.exists():
+        console.print("[dim]No decisions pending.[/dim]")
+        return
+
+    # Resolve mode: answer a specific entry
+    if spec_name and entry and answer:
+        decision_file = decisions_dir / f"{spec_name}.md"
+        if not decision_file.exists():
+            console.print(f"[red]Error:[/red] No decision file: tasks/decisions/{spec_name}.md")
+            sys.exit(1)
+
+        exit_code, message = resolve_decision(decision_file, entry, answer)
+        if exit_code == 0:
+            console.print(f"[green]{message}[/green]")
+            # Stage and commit
+            subprocess.run(
+                ["git", "add", "tasks/decisions/"],
+                cwd=workspace,
+                capture_output=True,
+            )
+            result = subprocess.run(
+                ["git", "commit", "-m",
+                 f"Operator decision: {spec_name} / {entry}\n\n"
+                 f"Answer: {answer}"],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                console.print(f"  [dim]State committed to git.[/dim]")
+            else:
+                console.print(
+                    f"  [yellow]Warning:[/yellow] git commit failed: {result.stderr.strip()}"
+                )
+
+            # Check if all entries in this file are resolved
+            remaining = [
+                e for e in parse_decision_entries(decision_file)
+                if e["status"] in ("open", "awaiting-operator")
+            ]
+            if not remaining:
+                console.print(f"\n[green]All decisions resolved for {spec_name}.[/green]")
+                console.print(f"  Next: [bold]factory run spec[/bold]")
+            else:
+                console.print(f"\n  {len(remaining)} decision(s) still pending for {spec_name}.")
+        else:
+            console.print(f"[red]Error:[/red] {message}")
+            sys.exit(1)
+        return
+
+    # Display mode: show pending decisions
+    decision_files = sorted(decisions_dir.glob("*.md"))
+    if not decision_files:
+        console.print("[dim]No decisions pending.[/dim]")
+        return
+
+    # Filter to specific spec if provided
+    if spec_name:
+        decision_files = [f for f in decision_files if f.stem == spec_name]
+        if not decision_files:
+            console.print(f"[red]Error:[/red] No decision file: tasks/decisions/{spec_name}.md")
+            sys.exit(1)
+
+    total_pending = 0
+    total_auto = 0
+
+    for df in decision_files:
+        entries = parse_decision_entries(df)
+        if not entries:
+            continue
+
+        console.print(f"\n[bold]{df.stem}[/bold]")
+
+        for e in entries:
+            status = e["status"]
+            rev = e["reversibility"]
+            impact = e["impact"]
+            tag = f"[dim]rev:{rev} impact:{impact}[/dim]"
+
+            if status in ("open", "awaiting-operator"):
+                console.print(f"  [yellow]PENDING[/yellow]  {e['id']}  {tag}")
+                if e["options"]:
+                    for line in e["options"].splitlines():
+                        console.print(f"    {line}")
+                if e["recommendation"]:
+                    console.print(f"    [dim]Rec: {e['recommendation']}[/dim]")
+                total_pending += 1
+            elif status == "auto-resolved":
+                if override or spec_name:
+                    console.print(f"  [green]AUTO[/green]     {e['id']}  {tag}")
+                total_auto += 1
+            else:
+                if spec_name:
+                    console.print(f"  [dim]RESOLVED[/dim]  {e['id']}  {tag}")
+
+    console.print()
+    if total_pending > 0:
+        console.print(
+            f"[yellow]{total_pending}[/yellow] decision(s) awaiting operator. "
+            f"{total_auto} auto-resolved."
+        )
+        console.print("Resolve with: [bold]factory decide SPEC --entry ENTRY_ID --answer CHOICE[/bold]")
+    else:
+        console.print(f"All decisions resolved. {total_auto} were auto-resolved.")
+        console.print("Next: [bold]factory run spec[/bold]")
 
 
 @main.command()

@@ -30,6 +30,28 @@ Explicitly state what this spec does NOT cover. This prevents Builder from gold-
 ### 6. Verification Criteria
 How Verifier should know this works. Not test cases (those are holdout scenarios), but observable properties: "A user should be able to [action] and see [result]."
 
+### 7. Ambiguities (if any)
+When a spec has open questions that block promotion to `specs/ready/`, write them as structured entries. Each ambiguity must be tagged for the kernel's Decision Monitor to classify and route:
+
+```markdown
+### 7.N {short-description}
+- reversibility: high | low
+- impact: governance | implementation | cosmetic
+- status: open
+
+**Options:**
+- **(a)** {option description}
+- **(b)** {option description}
+
+**Recommendation:** {your recommendation, if any}
+```
+
+The kernel reads these tags after the spec run:
+- `reversibility: high` + `impact: implementation|cosmetic` → auto-resolved (soft gate)
+- `reversibility: low` OR `impact: governance` → blocks for operator (hard gate)
+
+Do not write ambiguities as unstructured prose. The structured format is what makes the Decision Monitor work.
+
 ## The Quality Test
 
 A spec is ready when you can hand it to a competent developer who has never heard of this project and they can build it without asking a single question. If they'd need to ask, the spec is underspecified.

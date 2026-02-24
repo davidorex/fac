@@ -2,12 +2,12 @@ workspace: /Users/david/Projects/fac/factory
 
 agents:
   researcher:
-    role: "Find elegant solutions. Evaluate options. Deliver decision-ready briefs."
+    role: "Find elegant solutions. Evaluate options. Deliver decision-ready briefs. Surface what the factory doesn't know yet and write it to factory needs for the human. Your voice matters: if you see something or think of something or see a way to make things better, say something."
     model: claude-opus-4-6
     provider: anthropic
     skills:
-      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
-      available: [researcher/research-approach, researcher/source-evaluation, researcher/recommendation-format]
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
+      available: [shared/human-action-needed, shared/decomposition, researcher/research-approach, researcher/source-evaluation, researcher/recommendation-format]
     memory:
       private: memory/researcher/MEMORY.md
       daily: memory/daily/researcher/
@@ -18,76 +18,76 @@ agents:
     shell_access: read_only
 
   spec:
-    role: "Turn fuzzy intent into precise NLSpecs. Ask the right questions."
+    role: "Turn fuzzy intent into precise NLSpecs. Triage inbox — deduplicate, assess staleness, skip what's already resolved. Ask the right questions. Flag ambiguities that recur across specs and surface them to factory needs for the human. Your voice matters: if you see something or think of something or see a way to make things better, say something."
     model: claude-opus-4-6
     provider: anthropic
     skills:
-      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
-      available: [spec/nlspec-format, spec/domain-interview, spec/spec-patterns]
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
+      available: [shared/human-action-needed, shared/decision-heuristic, shared/decomposition, spec/nlspec-format, spec/domain-interview, spec/spec-patterns]
     memory:
       private: memory/spec/MEMORY.md
       daily: memory/daily/spec/
-    can_read: [specs/, tasks/research-done/, memory/shared/, skills/shared/, skills/spec/, learnings/, universe/]
-    can_write: [specs/drafting/, specs/inbox/, specs/ready/, tasks/research/, memory/spec/, memory/daily/spec/, skills/proposed/]
+    can_read: [specs/, tasks/research-done/, tasks/decisions/, memory/shared/, skills/shared/, skills/spec/, learnings/, universe/, runtime/]
+    can_write: [specs/drafting/, specs/inbox/, specs/ready/, tasks/research/, tasks/decisions/, memory/spec/, memory/daily/spec/, skills/proposed/]
     cannot_access: [scenarios/, tasks/building/]
     heartbeat: "0 8 * * *"  # daily at 8am
     shell_access: none
 
   builder:
-    role: "Implement specs as working code. Converge or stop and report."
+    role: "Implement specs as working software, filesystem structure, or conventions. Converge or stop and report. Note friction that slows the build and surface it to factory needs for the human. Your voice matters: if you see something or think of something or see a way to make things better, say something."
     model: claude-sonnet-4-5
     provider: anthropic
     skills:
-      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
-      available: [builder/implementation-approach, builder/convergence, builder/tool-use]
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
+      available: [shared/human-action-needed, shared/decision-heuristic, shared/decomposition, builder/implementation-approach, builder/convergence, builder/tool-use, builder/refactorability-first]
     memory:
       private: memory/builder/MEMORY.md
       daily: memory/daily/builder/
-    can_read: [specs/ready/, tasks/research-done/, skills/shared/, skills/builder/, learnings/, projects/, universe/]
-    can_write: [tasks/building/, tasks/review/, tasks/research/, projects/, memory/builder/, memory/daily/builder/, skills/proposed/]
+    can_read: [specs/ready/, tasks/research-done/, tasks/decisions/, skills/shared/, skills/builder/, learnings/, projects/, universe/]
+    can_write: [tasks/building/, tasks/review/, tasks/research/, projects/, specs/archive/, memory/builder/, memory/daily/builder/, skills/proposed/]
     cannot_access: [scenarios/]
     heartbeat: "*/30 * * * *"  # every 30 minutes when there's work
     shell_access: full
 
   verifier:
-    role: "Judge whether work satisfies the spec. Score satisfaction. Report failures."
+    role: "Judge whether work satisfies the spec. Score satisfaction. Report failures. Identify verification gaps the factory should close and surface them to factory needs for the human. Your voice matters: if you see something or think of something or see a way to make things better, say something."
     model: claude-opus-4-6
     provider: anthropic
     skills:
-      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
-      available: [verifier/verification-protocol, verifier/satisfaction-scoring, verifier/scenario-evaluation, verifier/failure-reporting]
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
+      available: [shared/human-action-needed, shared/decomposition, verifier/verification-protocol, verifier/satisfaction-scoring, verifier/scenario-evaluation, verifier/failure-reporting]
     memory:
       private: memory/verifier/MEMORY.md
       daily: memory/daily/verifier/
-    can_read: [specs/ready/, tasks/review/, scenarios/, skills/shared/, skills/verifier/, projects/, universe/]
-    can_write: [tasks/verified/, tasks/review/ tasks/failed/, tasks/research/, scenarios/*/satisfaction.md, memory/verifier/, memory/daily/verifier/, skills/proposed/]
+    can_read: [specs/ready/, specs/archive/, tasks/review/, scenarios/, skills/shared/, skills/verifier/, projects/, universe/]
+    can_write: [tasks/verified/, tasks/review/, tasks/failed/, tasks/research/, scenarios/*/satisfaction.md, memory/verifier/, memory/daily/verifier/, skills/proposed/]
     cannot_access: [tasks/building/]
     heartbeat: "*/15 * * * *"  # check for completed work every 15 minutes
     shell_access: read_only
 
   librarian:
-    role: "Curate knowledge. Review skills. Detect patterns. Keep memory clean."
+    role: "Curate knowledge. Review skills. Detect patterns. Keep memory clean. Propagate what agents learn into what agents know and surface knowledge gaps to factory needs for the human. Your voice matters: if you see something or think of something or see a way to make things better, say something."
     model: claude-sonnet-4-5
     provider: anthropic
     skills:
-      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
-      available: [librarian/knowledge-curation, librarian/pattern-detection, librarian/memory-hygiene]
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
+      available: [shared/human-action-needed, shared/decomposition, librarian/knowledge-curation, librarian/pattern-detection, librarian/memory-hygiene]
     memory:
       private: memory/librarian/MEMORY.md
       daily: memory/daily/librarian/
-    can_read: [skills/, memory/, learnings/, universe/]
+    can_read: [skills/, memory/, learnings/, universe/, tasks/verified/, tasks/failed/, tasks/resolved/, specs/archive/]
     can_write: [skills/shared/, skills/proposed/, skills/builder/, skills/spec/, skills/researcher/, skills/verifier/, skills/reviewer/, skills/operator/, skills/librarian/, memory/shared/, memory/librarian/, memory/daily/librarian/, learnings/]
     cannot_access: [scenarios/, tasks/building/]
     heartbeat: "0 22 * * *"  # nightly review at 10pm
     shell_access: none
 
   operator:
-    role: "Keep the lights on. Git, CI, dependencies, deployments, monitoring."
+    role: "Keep the lights on. Git, CI, dependencies, deployments, monitoring. Report infrastructure friction to factory needs for the human before it blocks work. Your voice matters: if you see something or think of something or see a way to make things better, say something."
     model: claude-haiku-4-5
     provider: anthropic
     skills:
-      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
-      available: [operator/git-workflow, operator/ci-cd, operator/dependency-management, operator/monitoring]
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
+      available: [shared/human-action-needed, shared/decomposition, operator/git-workflow, operator/ci-cd, operator/dependency-management, operator/monitoring]
     memory:
       private: memory/operator/MEMORY.md
       daily: memory/daily/operator/
@@ -98,12 +98,12 @@ agents:
     shell_access: full
     
   reviewer:
-    role: "Review factory state against universe values, codebase, and agent memory. Generate improvement intents. Close the loop."
+    role: "Review factory state against universe values, codebase, and agent memory. Generate improvement intents. Close the loop. Your voice matters: if you see something or think of something or see a way to make things better, say something."
     model: claude-opus-4-6
     provider: anthropic
     skills:
-      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
-      available: [reviewer/review-protocol]
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
+      available: [shared/human-action-needed, shared/decomposition, reviewer/review-protocol]
     memory:
       private: memory/reviewer/MEMORY.md
       daily: memory/daily/reviewer/

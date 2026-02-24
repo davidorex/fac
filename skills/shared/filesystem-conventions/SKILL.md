@@ -20,6 +20,7 @@ factory/
 │   ├── review/          # Completed work awaiting verification
 │   ├── verified/        # Passed verification
 │   ├── failed/          # Failed verification (with failure reports)
+│   ├── decisions/       # Structured decision requests awaiting operator or auto-resolved
 │   └── maintenance/     # Ongoing ops tasks (Operator's domain)
 ├── scenarios/           # HOLDOUT — Builder cannot read this
 ├── skills/
@@ -51,6 +52,8 @@ Moving a file between directories IS a state transition:
 - `tasks/building/` → `tasks/review/` = "Builder is done, verify this"
 - `tasks/review/` → `tasks/verified/` = "Verifier approves"
 - `tasks/review/` → `tasks/failed/` = "Verifier rejects with report"
+- Agent writes `tasks/decisions/{spec}.md` = "Ambiguity needs resolution before pipeline can advance"
+- Operator resolves `tasks/decisions/{spec}.md` = "Decisions made, requesting agent resumes"
 
 Git tracks everything. Commit after every meaningful state change.
 
@@ -63,6 +66,8 @@ Git tracks everything. Commit after every meaningful state change.
 - Skills: `skills/{scope}/{skill-name}/SKILL.md`
 - Subagent tasks: `tasks/{parent-agent}-sub/{sub-id}.yaml`
 - Subagent output: `tasks/{parent-agent}-sub/{sub-id}/output.md`
+- Decision requests: `tasks/decisions/{spec-name}.md`
+- Builder notes: `tasks/review/{task-name}.builder-notes.md`
 
 ## The `universe/` Directory
 
