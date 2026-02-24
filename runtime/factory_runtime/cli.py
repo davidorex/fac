@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import click
 from rich.console import Console
@@ -15,6 +16,65 @@ from .config import find_workspace, load_config
 from .run_log import RunLogger
 
 console = Console()
+
+# Pipeline downstream mapping: agent_name → list of (relative_dir, suggested_command_or_None).
+# A command of None means the entry is informational only — no single agent owns next action.
+# This is the single authoritative data structure for pipeline awareness.
+PIPELINE_DOWNSTREAM: dict[str, list[tuple[str, Optional[str]]]] = {
+    "spec": [
+        ("specs/ready", "factory run builder"),
+        ("tasks/research", "factory run researcher"),
+    ],
+    "researcher": [
+        ("tasks/research-done", None),
+    ],
+    "builder": [
+        ("tasks/review", "factory run verifier"),
+    ],
+    "verifier": [
+        ("tasks/failed", None),
+        ("tasks/verified", None),
+    ],
+    "librarian": [],
+    "operator": [],
+}
+
+
+def print_pipeline_next(agent: str, workspace: Path) -> None:
+    """Print pipeline next-step guidance after a successful agent run.
+
+    Checks each downstream directory for the given agent and prints lines
+    for directories that contain non-dotfile items.  If no downstream
+    directories have work, prints an idle message instead.
+
+    Called only on successful completion (not on exception).  Called even
+    when the agent responded NO_REPLY, because work may have been waiting
+    from a previous run.
+    """
+    downstreams = PIPELINE_DOWNSTREAM.get(agent, [])
+    active: list[tuple[str, int, Optional[str]]] = []
+
+    for dir_rel, command in downstreams:
+        dir_path = workspace / dir_rel
+        if dir_path.exists():
+            items = [f for f in dir_path.iterdir() if not f.name.startswith(".")]
+            if items:
+                active.append((dir_rel, len(items), command))
+
+    console.print()
+    if not active:
+        console.print("  [dim]Pipeline idle — nothing waiting downstream.[/dim]")
+    else:
+        for dir_rel, count, command in active:
+            if command:
+                console.print(
+                    f"  {dir_rel} has [yellow]{count}[/yellow] item(s)"
+                    f" \u2014 next: [bold]{command}[/bold]"
+                )
+            else:
+                console.print(
+                    f"  {dir_rel} has [yellow]{count}[/yellow] item(s)"
+                )
 
 
 @click.group()
@@ -118,6 +178,7 @@ def run(agent: str, task: str | None, message: str | None) -> None:
             console.print(result)
 
         console.print(f"\n[dim]Run logged to runs/{run_logger.run_id}/[/dim]")
+        print_pipeline_next(agent, config.workspace)
 
     except Exception as e:
         console.print(f"[red]Error during agent run:[/red] {e}")
