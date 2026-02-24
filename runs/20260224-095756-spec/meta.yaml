@@ -1,0 +1,5 @@
+agent: spec
+model: claude-opus-4-6
+run_id: 20260224-095756-spec
+timestamp: '2026-02-24T09:57:56.033655'
+trigger: heartbeat

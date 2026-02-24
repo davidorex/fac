@@ -40,6 +40,35 @@ FACTORY_VENV=/Users/david/Projects/fac/factory/.venv/bin
 0 22 * * *    cd $FACTORY_WORKSPACE && $FACTORY_VENV/factory run librarian >> runs/cron.log 2>&1
 ```
 
+## Inbox Watcher (Event-Driven)
+
+The cron schedule creates latency — a file dropped at 9am waits 23 hours for
+the Spec agent's next heartbeat. The inbox watcher fixes this:
+
+```bash
+# Foreground (see output live)
+./bin/watch-inbox
+
+# Background (survives terminal close)
+nohup ./bin/watch-inbox &
+```
+
+When a file appears in `specs/inbox/`, the watcher immediately fires:
+1. **Spec agent** — processes the new intent
+2. **Researcher** — handles any research requests created
+3. **Builder** — picks up any specs that are ready
+
+This cascade means a dropped intent can reach the Builder within minutes, not
+hours. The watcher complements cron — it doesn't replace it. Cron handles the
+steady rhythm; the watcher handles urgency.
+
+Requires `fswatch` on macOS (`brew install fswatch`) or `inotifywait` on Linux
+(`apt install inotify-tools`). Falls back to 10-second polling if neither is
+available.
+
+Debounce: won't re-fire within 60 seconds of the last run.
+Log: `runs/watch-inbox.log`
+
 ## Notes
 
 - The ANTHROPIC_API_KEY environment variable must be available to cron jobs.

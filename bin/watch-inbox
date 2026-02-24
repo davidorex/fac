@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+#
+# watch-inbox — fire the Spec agent immediately when a file lands in specs/inbox/
+#
+# Usage:
+#   ./bin/watch-inbox              # foreground (ctrl-c to stop)
+#   ./bin/watch-inbox &            # background
+#   nohup ./bin/watch-inbox &      # survives terminal close
+#
+# Requires: fswatch (macOS: brew install fswatch)
+#           OR inotifywait (Linux: apt install inotify-tools)
+#
+# This complements cron — it doesn't replace it. Cron handles the steady
+# heartbeat rhythm. This handles the "file just landed, go now" case.
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FACTORY_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+INBOX="$FACTORY_ROOT/specs/inbox"
+VENV="$FACTORY_ROOT/.venv/bin"
+LOG="$FACTORY_ROOT/runs/watch-inbox.log"
+
+# Ensure inbox exists
+mkdir -p "$INBOX"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
+}
+
+# macOS desktop notification (silent on Linux/no osascript)
+notify() {
+    local title="$1"
+    local message="$2"
+    if command -v osascript &>/dev/null; then
+        osascript -e "display notification \"$message\" with title \"🏭 Factory\" subtitle \"$title\"" 2>/dev/null || true
+    fi
+}
+
+# Debounce: don't re-fire if spec agent ran within the last 60 seconds
+LAST_FIRE=0
+DEBOUNCE_SECONDS=60
+
+fire_spec() {
+    local now
+    now=$(date +%s)
+    local elapsed=$(( now - LAST_FIRE ))
+
+    if [ "$elapsed" -lt "$DEBOUNCE_SECONDS" ]; then
+        log "Debounce: spec agent ran ${elapsed}s ago, skipping"
+        return
+    fi
+
+    # Count files in inbox (ignore dotfiles)
+    local count
+    count=$(find "$INBOX" -maxdepth 1 -type f -not -name '.*' 2>/dev/null | wc -l | tr -d ' ')
+
+    if [ "$count" -eq 0 ]; then
+        log "Inbox empty after event, skipping"
+        return
+    fi
+
+    # List the files that triggered this
+    local files
+    files=$(find "$INBOX" -maxdepth 1 -type f -not -name '.*' -exec basename {} \; | tr '\n' ', ' | sed 's/,$//')
+
+    log "Inbox has $count file(s) — firing spec agent"
+    notify "Inbox → Spec" "$count file(s): $files"
+    LAST_FIRE=$(date +%s)
+
+    cd "$FACTORY_ROOT"
+    if "$VENV/factory" run spec >> "$LOG" 2>&1; then
+        notify "Spec ✓" "Finished processing. Cascading..."
+    else
+        log "Spec agent exited with error"
+        notify "Spec ✗" "Error — check runs/watch-inbox.log"
+        return
+    fi
+
+    # After spec runs, also nudge the researcher and builder
+    # so the pipeline flows without waiting for their cron windows
+    log "Cascading: firing researcher"
+    notify "Researcher" "Checking for research requests..."
+    if "$VENV/factory" run researcher >> "$LOG" 2>&1; then
+        log "Researcher complete"
+    else
+        log "Researcher exited with error"
+        notify "Researcher ✗" "Error — check log"
+    fi
+
+    log "Cascading: firing builder"
+    notify "Builder" "Checking for ready specs..."
+    if "$VENV/factory" run builder >> "$LOG" 2>&1; then
+        log "Builder complete"
+    else
+        log "Builder exited with error"
+        notify "Builder ✗" "Error — check log"
+    fi
+
+    notify "Cascade Complete" "Pipeline finished for: $files"
+    log "Pipeline cascade complete"
+}
+
+log "Watching $INBOX for new files..."
+log "Debounce: ${DEBOUNCE_SECONDS}s between firings"
+log "Cascade: spec → researcher → builder"
+notify "Watcher Started" "Monitoring specs/inbox/ for new files"
+
+# Detect available watcher
+if command -v fswatch &>/dev/null; then
+    log "Using fswatch"
+    fswatch -0 --event Created "$INBOX" | while IFS= read -r -d '' event; do
+        log "Event: $event"
+        fire_spec
+    done
+
+elif command -v inotifywait &>/dev/null; then
+    log "Using inotifywait"
+    inotifywait -m -e create -e moved_to --format '%f' "$INBOX" | while read -r filename; do
+        log "Event: $filename"
+        fire_spec
+    done
+
+else
+    # Fallback: poll every 10 seconds
+    log "No fswatch or inotifywait found — falling back to polling (10s interval)"
+    log "Install fswatch (brew install fswatch) for instant response"
+
+    LAST_COUNT=0
+    while true; do
+        count=$(find "$INBOX" -maxdepth 1 -type f -not -name '.*' 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$count" -gt 0 ] && [ "$count" -ne "$LAST_COUNT" ]; then
+            log "Poll: inbox count changed ($LAST_COUNT → $count)"
+            fire_spec
+        fi
+        LAST_COUNT=$count
+        sleep 10
+    done
+fi

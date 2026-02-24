@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -75,6 +76,137 @@ def print_pipeline_next(agent: str, workspace: Path) -> None:
                 console.print(
                     f"  {dir_rel} has [yellow]{count}[/yellow] item(s)"
                 )
+
+
+def run_spec_pipeline_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
+    """Enforce the single-stage invariant for the spec pipeline.
+
+    A spec file may exist in at most one pipeline stage.  When a file
+    exists in a downstream stage, any copies in upstream stages are
+    removed.  The ordering from earliest to latest is:
+
+        inbox → drafting → ready → archive
+
+    Archive is the terminal state and is never deleted.  The cleanup is
+    idempotent — running it multiple times is equivalent to running it
+    once.
+
+    Returns a list of log lines describing every deletion (or planned
+    deletion when dry_run=True).
+    """
+    stages = [
+        workspace / "specs" / "inbox",
+        workspace / "specs" / "drafting",
+        workspace / "specs" / "ready",
+        workspace / "specs" / "archive",
+    ]
+
+    # Build a name → set-of-stage-indices map for existing .md files
+    stage_files: list[set[str]] = []
+    for stage in stages:
+        if stage.exists():
+            stage_files.append({f.name for f in stage.iterdir() if f.suffix == ".md"})
+        else:
+            stage_files.append(set())
+
+    log_lines: list[str] = []
+
+    # For each stage (except the last/archive), check whether a file
+    # in a *later* stage supersedes a copy in this stage.
+    for upstream_idx, upstream_stage in enumerate(stages[:-1]):
+        for downstream_idx in range(upstream_idx + 1, len(stages)):
+            downstream_stage = stages[downstream_idx]
+            # Files that appear both upstream and downstream → remove upstream copy
+            stale = stage_files[upstream_idx] & stage_files[downstream_idx]
+            for name in sorted(stale):
+                upstream_file = upstream_stage / name
+                downstream_label = downstream_stage.relative_to(workspace)
+                log_line = (
+                    f"Cleaned stale spec: {upstream_file.relative_to(workspace)}"
+                    f" (exists in {downstream_label})"
+                )
+                log_lines.append(log_line)
+                if not dry_run and upstream_file.exists():
+                    upstream_file.unlink()
+                # Remove from the in-memory set so we don't log it again
+                # for a higher-priority downstream.
+                stage_files[upstream_idx].discard(name)
+
+    return log_lines
+
+
+def extract_failure_learnings(workspace: Path) -> list[str]:
+    """Extract generalizable learnings from Verifier failure reports.
+
+    Scans every file in tasks/failed/ for a '## Generalizable Learning'
+    section.  For each file that contains the section and does not yet
+    have a corresponding entry in learnings/failures/, writes a new
+    learning file.
+
+    For failure reports that lack the section, logs a non-blocking
+    warning.
+
+    Returns a list of log lines (warnings + extraction confirmations).
+    """
+    failed_dir = workspace / "tasks" / "failed"
+    learnings_dir = workspace / "learnings" / "failures"
+    log_lines: list[str] = []
+
+    if not failed_dir.exists():
+        return log_lines
+
+    learnings_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collect existing learning filenames once for deduplication check
+    existing_learning_names = (
+        {f.name for f in learnings_dir.iterdir() if f.suffix == ".md"}
+        if learnings_dir.exists()
+        else set()
+    )
+
+    for report_file in sorted(failed_dir.glob("*.md")):
+        task_name = report_file.stem
+        text = report_file.read_text()
+
+        # Locate the ## Generalizable Learning section
+        match = re.search(
+            r"^## Generalizable Learning\s*\n(.*?)(?=^## |\Z)",
+            text,
+            re.MULTILINE | re.DOTALL,
+        )
+
+        if not match:
+            log_lines.append(
+                f"Failure report for {task_name} lacks a Generalizable Learning section."
+            )
+            continue
+
+        learning_content = match.group(1).strip()
+
+        # Deduplication: skip if any existing file contains task_name as a substring
+        if any(task_name in name for name in existing_learning_names):
+            continue
+
+        # Determine date from today (runtime extraction date)
+        today = datetime.now().strftime("%Y-%m-%d")
+        learning_filename = f"{today}-{task_name}-verification-failure.md"
+        learning_path = learnings_dir / learning_filename
+
+        learning_text = (
+            f"# Failure Learning: {task_name}\n\n"
+            f"{learning_content}\n\n"
+            f"## Source\n"
+            f"- Failure report: tasks/failed/{task_name}.md\n"
+            f"- Spec: specs/archive/{task_name}.md\n"
+            f"- Extracted by: runtime (post-verifier execution)\n"
+        )
+        learning_path.write_text(learning_text)
+        existing_learning_names.add(learning_filename)
+        log_lines.append(
+            f"Extracted learning: {learning_path.relative_to(workspace)}"
+        )
+
+    return log_lines
 
 
 @click.group()
@@ -179,6 +311,20 @@ def run(agent: str, task: str | None, message: str | None) -> None:
 
         console.print(f"\n[dim]Run logged to runs/{run_logger.run_id}/[/dim]")
         print_pipeline_next(agent, config.workspace)
+
+        # Post-execution: spec pipeline cleanup (runs after every agent)
+        cleanup_log = run_spec_pipeline_cleanup(config.workspace)
+        for line in cleanup_log:
+            console.print(f"  [dim]{line}[/dim]")
+
+        # Post-execution: failure learning extraction (runs after verifier)
+        if agent == "verifier":
+            learning_log = extract_failure_learnings(config.workspace)
+            for line in learning_log:
+                if line.startswith("Failure report") and "lacks" in line:
+                    console.print(f"  [yellow]Warning:[/yellow] {line}")
+                else:
+                    console.print(f"  [dim]{line}[/dim]")
 
     except Exception as e:
         console.print(f"[red]Error during agent run:[/red] {e}")
@@ -374,6 +520,35 @@ def show_workspace() -> None:
             style = "yellow" if n > 0 else "dim"
             console.print(f"  {label}: [{style}]{n}[/{style}]")
         console.print()
+
+
+@main.command(name="cleanup-specs")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be cleaned without deleting.")
+def cleanup_specs_cmd(dry_run: bool) -> None:
+    """Remove stale spec files that have advanced to a downstream pipeline stage.
+
+    Enforces the single-stage invariant: a spec file exists in at most
+    one of inbox / drafting / ready / archive.  When a file appears in a
+    downstream stage, copies in upstream stages are removed (archive is
+    never touched).
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    log_lines = run_spec_pipeline_cleanup(config.workspace, dry_run=dry_run)
+
+    if not log_lines:
+        console.print("[dim]Spec pipeline is clean — no stale files found.[/dim]")
+        return
+
+    prefix = "[dry-run] Would clean" if dry_run else "Cleaned"
+    for line in log_lines:
+        # Replace the leading "Cleaned" with the appropriate prefix for dry-run
+        display = line.replace("Cleaned stale spec:", f"{prefix}:")
+        console.print(f"  {display}")
 
 
 if __name__ == "__main__":

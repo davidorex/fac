@@ -76,7 +76,7 @@ agents:
       private: memory/librarian/MEMORY.md
       daily: memory/daily/librarian/
     can_read: [skills/, memory/, learnings/, universe/]
-    can_write: [skills/shared/, skills/proposed/, memory/shared/, memory/librarian/, memory/daily/librarian/, learnings/]
+    can_write: [skills/shared/, skills/proposed/, skills/builder/, skills/spec/, skills/researcher/, skills/verifier/, skills/reviewer/, skills/operator/, skills/librarian/, memory/shared/, memory/librarian/, memory/daily/librarian/, learnings/]
     cannot_access: [scenarios/, tasks/building/]
     heartbeat: "0 22 * * *"  # nightly review at 10pm
     shell_access: none
@@ -96,3 +96,19 @@ agents:
     cannot_access: [scenarios/, tasks/building/, specs/drafting/]
     heartbeat: "0 * * * *"  # hourly
     shell_access: full
+    
+  reviewer:
+    role: "Review factory state against universe values, codebase, and agent memory. Generate improvement intents. Close the loop."
+    model: claude-opus-4-6
+    provider: anthropic
+    skills:
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, shared/decomposition]
+      available: [reviewer/review-protocol]
+    memory:
+      private: memory/reviewer/MEMORY.md
+      daily: memory/daily/reviewer/
+    can_read: [universe/, memory/, learnings/, specs/, tasks/verified/, tasks/failed/, skills/, projects/, runtime/]
+    can_write: [specs/inbox/, memory/reviewer/, memory/daily/reviewer/, skills/proposed/]
+    cannot_access: [scenarios/, tasks/building/]
+    heartbeat: "0 6 * * *"  # daily at 6am, before spec's 8am
+    shell_access: read_only 
