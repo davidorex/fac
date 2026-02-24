@@ -195,23 +195,18 @@ def _compute_next_actions(workspace: Path) -> list[str]:
     if inbox_count > 0 or drafting_count > 0:
         _, inbox_names = _count_dir(workspace, "specs/inbox")
         _, drafting_names = _count_dir(workspace, "specs/drafting")
-        spec_names = inbox_names + drafting_names
-        # Annotate when drafting specs have unblocking context available
-        annotation = ""
-        if drafting_count > 0 and inbox_count == 0:
-            cues = []
-            rd_count, _ = _count_dir(workspace, "tasks/research-done")
-            if rd_count > 0:
-                cues.append("research done")
-            dec_dir = workspace / "tasks" / "decisions"
-            if dec_dir.exists() and any(dec_dir.glob("*.md")):
-                cues.append("decisions resolved")
-            if cues:
-                annotation = f"  ({', '.join(cues)} → finalize)"
-        if len(spec_names) == 1:
-            actions.append(f"factory run spec {spec_names[0]}{annotation}")
-        else:
-            actions.append(f"factory run spec NAME  ({len(spec_names)}: {', '.join(spec_names[:3])}){annotation}")
+        # Inbox items → factory run spec (initial spec pass)
+        if inbox_count > 0:
+            if len(inbox_names) == 1:
+                actions.append(f"factory run spec {inbox_names[0]}")
+            else:
+                actions.append(f"factory run spec NAME  ({len(inbox_names)}: {', '.join(inbox_names[:3])})")
+        # Drafting items → factory advance (has context to incorporate)
+        if drafting_count > 0:
+            if len(drafting_names) == 1:
+                actions.append(f"factory advance {drafting_names[0]}")
+            else:
+                actions.append(f"factory advance NAME  ({len(drafting_names)}: {', '.join(drafting_names[:3])})")
     if ready_count > 0:
         _, ready_names = _count_dir(workspace, "specs/ready")
         if len(ready_names) == 1:
@@ -1171,6 +1166,134 @@ def init_project(workspace: str | None) -> None:
     console.print(f"[green]Registered project:[/green] {project_dir.name}")
     console.print(f"  workspace: {ws}")
     console.print(f"  marker: {marker}")
+
+
+@main.command()
+@click.argument("spec_name")
+def advance(spec_name: str) -> None:
+    """Advance a spec that has unblocking context (research, decisions).
+
+    Determines the right agent and constructs a directed message with
+    all available context: research briefs, resolved decisions, and
+    the current spec content.
+
+        factory advance multi-cli-backend-support
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    workspace = config.workspace
+
+    # Find the spec
+    spec_file = _resolve_spec_file(workspace, spec_name)
+    if spec_file is None:
+        console.print(f"[red]Error:[/red] No spec '{spec_name}' found in inbox/, drafting/, or ready/")
+        sys.exit(1)
+
+    stage = spec_file.parent.name
+    spec_content = spec_file.read_text()
+
+    # Determine which agent should handle it based on stage
+    if stage in ("inbox", "drafting"):
+        agent = "spec"
+    elif stage == "ready":
+        agent = "builder"
+    else:
+        console.print(f"[red]Error:[/red] Spec in unexpected stage: {stage}")
+        sys.exit(1)
+
+    # Gather unblocking context
+    context_parts = [f"Advance this spec: {spec_name} (currently in {stage}/)\n"]
+    context_parts.append(f"--- {spec_file.name} ---\n{spec_content}\n")
+
+    # Research briefs
+    research_done = workspace / "tasks" / "research-done"
+    if research_done.exists():
+        for brief in sorted(research_done.glob("*.md")):
+            if spec_name in brief.stem or brief.stem.startswith("spec-"):
+                context_parts.append(f"--- Research brief: {brief.name} ---\n{brief.read_text()}\n")
+
+    # Resolved decisions
+    dec_file = workspace / "tasks" / "decisions" / f"{spec_name}.md"
+    if dec_file.exists():
+        context_parts.append(f"--- Decisions: {dec_file.name} ---\n{dec_file.read_text()}\n")
+
+    if stage in ("inbox", "drafting"):
+        context_parts.append(
+            "Incorporate the research findings and resolved decisions into the spec. "
+            "If the spec is complete, move it to specs/ready/."
+        )
+    elif stage == "ready":
+        context_parts.append(
+            "Implement the spec. Research and decisions are provided for context."
+        )
+
+    message = "\n".join(context_parts)
+
+    # Delegate to the run command logic
+    agent_config = config.agents[agent]
+    trigger = "message"
+
+    run_logger = RunLogger(
+        workspace=config.workspace,
+        agent_name=agent,
+        trigger=trigger,
+        model=agent_config.model,
+    )
+
+    console.print(f"[bold]Advancing {spec_name}[/bold] via {agent} ({agent_config.model})")
+    console.print(f"  Stage: {stage}/")
+    console.print(f"  Run ID: {run_logger.run_id}")
+
+    from .llm import run_agent as _run_agent
+
+    try:
+        result = _run_agent(
+            config=config,
+            agent_config=agent_config,
+            message=message,
+            is_heartbeat=False,
+            run_logger=run_logger,
+        )
+
+        if result.strip().upper() == "NO_REPLY":
+            console.print(f"  [dim]Agent responded: NO_REPLY[/dim]")
+        else:
+            console.print(f"\n[bold green]Agent response:[/bold green]")
+            console.print(result)
+
+        console.print(f"\n[dim]Run logged to runs/{run_logger.run_id}/[/dim]")
+        print_pipeline_next(agent, config.workspace)
+
+        # Post-execution kernel passes
+        for line in run_spec_pipeline_cleanup(config.workspace):
+            console.print(f"  [dim]{line}[/dim]")
+        for line in run_task_review_cleanup(config.workspace):
+            console.print(f"  [dim]{line}[/dim]")
+        for line in run_research_cleanup(config.workspace):
+            console.print(f"  [dim]{line}[/dim]")
+        decision_log = run_decision_monitor(config.workspace, agent)
+        for line in decision_log:
+            if "hard gate" in line:
+                console.print(f"  [yellow]{line}[/yellow]")
+            else:
+                console.print(f"  [dim]{line}[/dim]")
+
+        # WhatsApp notification
+        if result.strip().upper() != "NO_REPLY":
+            summary = result.strip()
+            if len(summary) > 500:
+                summary = summary[:497] + "..."
+            next_actions = _compute_next_actions(config.workspace)
+            _send_whatsapp(config.workspace, agent, summary, next_actions)
+
+    except Exception as e:
+        console.print(f"[red]Error during advance:[/red] {e}")
+        run_logger.log_outcome(f"ERROR: {e}")
+        sys.exit(1)
 
 
 @main.command()
