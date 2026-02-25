@@ -102,8 +102,8 @@ agents:
     model: claude-opus-4-6
     provider: anthropic
     skills:
-      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement]
-      available: [shared/human-action-needed, shared/decomposition, shared/nanoclaw-whatsapp, reviewer/review-protocol]
+      always: [shared/filesystem-conventions, shared/context-discipline, shared/self-improvement, reviewer/review-protocol]
+      available: [shared/human-action-needed, shared/decomposition, shared/nanoclaw-whatsapp]
     memory:
       private: memory/reviewer/MEMORY.md
       daily: memory/daily/reviewer/
