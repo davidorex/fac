@@ -277,6 +277,10 @@ def _run_post_execution_passes(
         log.append(f"[dim]{line}[/dim]")
     for line in run_research_cleanup(workspace):
         log.append(f"[dim]{line}[/dim]")
+    for line in run_decision_cleanup(workspace):
+        log.append(f"[dim]{line}[/dim]")
+    for line in run_research_done_cleanup(workspace):
+        log.append(f"[dim]{line}[/dim]")
 
     for line in run_decision_monitor(workspace, agent):
         if "hard gate" in line:
@@ -699,6 +703,127 @@ def run_research_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
             log_lines.append(log_line)
             if not dry_run:
                 request_file.unlink()
+
+    return log_lines
+
+
+def run_decision_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
+    """Remove stale decision files whose specs are archived and all entries resolved.
+
+    A decision file in tasks/decisions/ is stale when:
+    - The corresponding spec exists in specs/archive/ (work completed)
+    - Every *unique* decision entry is resolved or auto-resolved
+
+    Handles duplicate entries (decision monitor writes resolved copies
+    alongside originals): groups entries by heading, considers a heading
+    resolved if *any* entry under it has resolved/auto-resolved status.
+
+    Returns a list of log lines describing every deletion.
+    """
+    decisions_dir = workspace / "tasks" / "decisions"
+    archive_dir = workspace / "specs" / "archive"
+
+    if not decisions_dir.exists() or not archive_dir.exists():
+        return []
+
+    archived_names: set[str] = {
+        f.name for f in archive_dir.iterdir() if f.suffix == ".md"
+    }
+
+    log_lines: list[str] = []
+
+    for dec_file in sorted(decisions_dir.glob("*.md")):
+        # Check if the corresponding spec is archived
+        if dec_file.name not in archived_names:
+            continue
+
+        # Parse entries grouped by heading. A heading is resolved if any
+        # of its status lines says resolved or auto-resolved.
+        text = dec_file.read_text()
+        heading_statuses: dict[str, list[str]] = {}
+        current_heading = ""
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("### "):
+                current_heading = stripped
+            elif stripped.startswith("- status:") and current_heading:
+                status_val = stripped.split(":", 1)[1].strip()
+                heading_statuses.setdefault(current_heading, []).append(status_val)
+
+        if not heading_statuses:
+            continue
+
+        # A heading is considered resolved if any of its status values is
+        # resolved or auto-resolved.  All headings must be resolved.
+        all_resolved = all(
+            any(s in ("resolved", "auto-resolved") for s in statuses)
+            for statuses in heading_statuses.values()
+        )
+
+        if not all_resolved:
+            continue
+
+        log_line = (
+            f"Cleaned stale decision file: tasks/decisions/{dec_file.name}"
+            f" (spec archived, all entries resolved)"
+        )
+        log_lines.append(log_line)
+        if not dry_run:
+            dec_file.unlink()
+
+    return log_lines
+
+
+def run_research_done_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
+    """Remove consumed research briefs when no active specs remain.
+
+    Research briefs in tasks/research-done/ are consumed by the spec
+    agent during drafting.  A brief is stale when no specs exist in any
+    active pipeline stage (inbox, drafting, ready) — all research has
+    been consumed and the work that needed it is complete.
+
+    This avoids the name-matching problem: research briefs are often
+    named differently from the spec they feed (e.g. spec-kimi-cli-v2
+    feeds multi-cli-backend-support).
+
+    Returns a list of log lines describing every deletion.
+    """
+    done_dir = workspace / "tasks" / "research-done"
+    if not done_dir.exists():
+        return []
+
+    briefs = sorted(done_dir.glob("*.md"))
+    if not briefs:
+        return []
+
+    # Check if any specs are active in the pipeline
+    active_count = 0
+    for stage in ("inbox", "drafting", "ready"):
+        stage_dir = workspace / "specs" / stage
+        if stage_dir.exists():
+            active_count += sum(1 for f in stage_dir.iterdir() if f.suffix == ".md")
+
+    if active_count > 0:
+        return []  # specs still in flight — research might still be needed
+
+    # Also check if there are pending research requests (brief was
+    # produced but the requesting spec hasn't consumed it yet)
+    research_dir = workspace / "tasks" / "research"
+    if research_dir.exists():
+        pending = sum(1 for f in research_dir.iterdir() if f.suffix == ".md")
+        if pending > 0:
+            return []
+
+    log_lines: list[str] = []
+    for brief_file in briefs:
+        log_line = (
+            f"Cleaned consumed research brief: tasks/research-done/{brief_file.name}"
+            f" (no active specs in pipeline)"
+        )
+        log_lines.append(log_line)
+        if not dry_run:
+            brief_file.unlink()
 
     return log_lines
 
