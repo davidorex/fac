@@ -20,3 +20,9 @@ build/
 
 # Backend switch state
 .factory-original-models.yaml
+
+# ── Factory output (ephemeral, not OS) ──
+# Run logs: bulk execution history, grows unbounded.
+# Forensic value but not part of the operating system.
+runs/
+!runs/.gitkeep
