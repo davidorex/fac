@@ -2156,6 +2156,28 @@ def start(max_steps: int) -> None:
             )
             break
 
+        # Post-dispatch state transitions
+        if dispatch_type == "docs":
+            # Docs consumed the verified task — remove it so the loop doesn't retry.
+            # The verification report is preserved in specs/archive/ and runs/.
+            git_files = []
+            for suffix in [".md", ".builder-notes.md"]:
+                vf = workspace / "tasks" / "verified" / f"{spec_name_d}{suffix}"
+                if vf.exists():
+                    vf.unlink()
+                    git_files.append(str(vf.relative_to(workspace)))
+            if git_files:
+                subprocess.run(
+                    ["git", "add"] + git_files,
+                    cwd=workspace, capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "commit", "-m",
+                     f"Clear verified task: {spec_name_d} (docs completed)"],
+                    cwd=workspace, capture_output=True, text=True,
+                )
+                console.print(f"  [dim]Cleared tasks/verified/{spec_name_d} (docs done)[/dim]")
+
     # Final status
     console.print()
     console.print(f"[dim]Pipeline loop completed after {step} agent dispatch{'es' if step != 1 else ''}.[/dim]")
@@ -2835,6 +2857,25 @@ def docs(spec_name: str) -> None:
 
         console.print(f"\n[dim]Run logged to runs/{run_logger.run_id}/[/dim]")
         print_pipeline_next(agent, workspace)
+
+        # Clear verified task — docs consumed it
+        git_files = []
+        for suffix in [".md", ".builder-notes.md"]:
+            vf = workspace / "tasks" / "verified" / f"{spec_name}{suffix}"
+            if vf.exists():
+                vf.unlink()
+                git_files.append(str(vf.relative_to(workspace)))
+        if git_files:
+            subprocess.run(
+                ["git", "add"] + git_files,
+                cwd=workspace, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m",
+                 f"Clear verified task: {spec_name} (docs completed)"],
+                cwd=workspace, capture_output=True, text=True,
+            )
+            console.print(f"  [dim]Cleared tasks/verified/{spec_name} (docs done)[/dim]")
 
         # WhatsApp notification
         if result.strip().upper() != "NO_REPLY":
