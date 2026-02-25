@@ -106,7 +106,7 @@ Commands:
 
 <command_reference>
 Full per-command reference with arguments, options, examples, and exit codes:
-See references/commands.md in this skill directory.
+See [references/commands.md](references/commands.md)
 </command_reference>
 
 <success_criteria>
