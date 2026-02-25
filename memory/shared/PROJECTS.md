@@ -9,6 +9,11 @@ Factory internal improvements that go through the spec → build → verify pipe
 **Scope:** Refactored `llm.py` into a multi-backend dispatcher. Extracted `backends/anthropic.py` (Claude Code CLI) and added `backends/kimi.py` (kimi-cli). Context assembly, ACL injection, and governance remain in dispatcher (backend-agnostic). `provider:` field in agents.yaml selects backend. `backends/capabilities.md` documents capability matrix.
 **Minor observation:** `anthropic.py` carries a dead variable from the original code (cosmetic, pre-existing, non-functional).
 
+### failure-path-fire-drill
+**Status:** Complete (verified 2026-02-26, 9/10)
+**Scope:** Added `factory fire-drill [--force]` command that validates failure workflow infrastructure (extract_failure_learnings, rebuild_task, resolve_completed_failures) with synthetic data. 6-step sequential drill with pre-flight stale-artifact guard. Exits 0 on pass, 1 on failure. No side effects — synchronous, no agent dispatch, no GC passes, no WhatsApp notifications.
+**Minor observation:** Cleanup `os.remove()` calls in `finally` block are not individually exception-guarded; a permissions error on a specific file would propagate out and prevent the report from printing. Structurally fragile but practically unreachable in normal factory operation.
+
 ### no-ephemeral-suggestions
 **Status:** Complete (verified 2026-02-25, 9/10)
 **Scope:** Replaced dead-end `category: observation` path in needs.md with structured `specs/factory-internal/` lifecycle. Added `factory triage` command (list/promote/dismiss). Kernel now auto-promotes observation entries from needs.md and extracts signal phrases from prose. 4th GC pass (`cleanup-factory-internal`). `factory status` shows Factory Internal section. `factory needs` no longer shows observations.

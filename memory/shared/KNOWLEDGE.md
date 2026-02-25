@@ -42,6 +42,13 @@ Failed tasks can be rebuilt via `factory rebuild {task-name}`. The command:
 ### Failed Task Lifecycle
 `tasks/resolved/` holds failure reports that have been addressed (by rebuild or manual resolution). After a rebuilt task is verified, the old failure report moves to `tasks/resolved/` with a `## Resolution` annotation. `factory resolve {task-name} --reason "..."` handles manual resolution.
 
+### Failure Workflow Validation
+`factory fire-drill [--force]` validates the failure workflow infrastructure end-to-end using synthetic data. Exercises `extract_failure_learnings()`, `rebuild_task()`, and `resolve_completed_failures()` in sequence with a synthetic `fire-drill-canary` task. Reports a 6-step pass/fail result; exits 0 on pass, 1 on failure.
+
+Pre-flight guard: if any `fire-drill-canary` artifacts exist from a prior interrupted run, the command exits 1 with a warning listing them. `--force` removes stale artifacts before proceeding.
+
+The command is synchronous, does not dispatch agents, does not trigger GC passes, and does not send WhatsApp notifications. It leaves no artifacts after a clean exit (cleanup runs in a `finally` block). Listed under `"operate"` in `_CMD_CATEGORIES`.
+
 ### Human-Action-Needed System
 Agents write to `memory/{agent}/needs.md` when hitting blockers that require human intervention (READ-ONLY file edits, access scope changes, external actions). `factory needs` surfaces all open **blocker** entries grouped by category. `factory needs --resolve {id}` marks entries resolved. `--blockers-only` is a backward-compatible no-op (observations no longer appear in `factory needs` at all).
 
