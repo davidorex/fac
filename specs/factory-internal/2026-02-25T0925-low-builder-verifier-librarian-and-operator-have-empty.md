@@ -1,6 +1,8 @@
 # builder-verifier-librarian-and-operator-have-empty
 - severity: low
-- status: open
+- status: promoted
+- promoted_to: specs/inbox/builder-verifier-librarian-and-operator-have-empty.md
+- promoted_at: 2026-02-26T07:09:35
 - created: 2026-02-25T08:17
 - source-agent: reviewer
 - source-type: needs-promotion
