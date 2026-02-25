@@ -251,6 +251,283 @@ def print_pipeline_next(agent: str, workspace: Path) -> None:
             console.print(f"    → [bold]{action}[/bold]")
 
 
+def _run_post_execution_passes(
+    workspace: Path, agent: str, result: str
+) -> list[str]:
+    """Run all post-execution kernel passes after an agent completes.
+
+    Returns log lines for display.  Consolidates the duplicated post-execution
+    logic from run(), advance(), docs(), and the start loop.
+    """
+    log: list[str] = []
+
+    for line in run_spec_pipeline_cleanup(workspace):
+        log.append(f"[dim]{line}[/dim]")
+    for line in run_task_review_cleanup(workspace):
+        log.append(f"[dim]{line}[/dim]")
+    for line in run_research_cleanup(workspace):
+        log.append(f"[dim]{line}[/dim]")
+
+    for line in run_decision_monitor(workspace, agent):
+        if "hard gate" in line:
+            log.append(f"[yellow]{line}[/yellow]")
+        else:
+            log.append(f"[dim]{line}[/dim]")
+
+    if agent == "verifier":
+        for line in resolve_completed_failures(workspace):
+            log.append(f"[dim]{line}[/dim]")
+        for line in extract_failure_learnings(workspace):
+            if line.startswith("Failure report") and "lacks" in line:
+                log.append(f"[yellow]Warning:[/yellow] {line}")
+            else:
+                log.append(f"[dim]{line}[/dim]")
+
+    for line in extract_surfaced_observations(workspace, agent, result):
+        log.append(f"[yellow]{line}[/yellow]")
+
+    for line in promote_needs_observations(workspace, agent):
+        log.append(f"[dim]{line}[/dim]")
+
+    for line in cleanup_factory_internal(workspace):
+        log.append(f"[dim]{line}[/dim]")
+
+    for line in run_factory_internal_migration(workspace):
+        log.append(line)
+
+    return log
+
+
+def _dispatch_agent(
+    config, agent: str, message: str, label: str
+) -> tuple[str, bool]:
+    """Run an agent with a directed message.  Returns (result, success).
+
+    Handles RunLogger setup, agent invocation, post-execution passes,
+    and WhatsApp notification.  Used by the ``start`` loop and can be
+    called directly for programmatic dispatch.
+    """
+    from .llm import run_agent as _run_agent
+
+    agent_config = config.agents[agent]
+
+    run_logger = RunLogger(
+        workspace=config.workspace,
+        agent_name=agent,
+        trigger="message",
+        model=agent_config.model,
+    )
+
+    console.print(f"\n[bold]Dispatching {agent}[/bold] ({agent_config.model}) — {label}")
+    console.print(f"  Run ID: {run_logger.run_id}")
+
+    try:
+        result = _run_agent(
+            config=config,
+            agent_config=agent_config,
+            message=message,
+            is_heartbeat=False,
+            run_logger=run_logger,
+        )
+
+        if result.strip().upper() == "NO_REPLY":
+            console.print(f"  [dim]Agent responded: NO_REPLY[/dim]")
+        else:
+            console.print(f"\n[bold green]Agent response:[/bold green]")
+            console.print(result)
+
+        console.print(f"\n[dim]Run logged to runs/{run_logger.run_id}/[/dim]")
+
+        for line in _run_post_execution_passes(config.workspace, agent, result):
+            console.print(f"  {line}")
+
+        if result.strip().upper() != "NO_REPLY":
+            summary = result.strip()
+            if len(summary) > 500:
+                summary = summary[:497] + "..."
+            next_actions = _compute_next_actions(config.workspace)
+            _send_whatsapp(config.workspace, agent, summary, next_actions)
+
+        return result, True
+
+    except Exception as e:
+        console.print(f"[red]Error during {agent} run:[/red] {e}")
+        run_logger.log_outcome(f"ERROR: {e}")
+        return str(e), False
+
+
+def _has_unresolved_decisions(workspace: Path) -> list[str]:
+    """Return spec names that have unresolved (awaiting-operator) decision entries."""
+    dec_dir = workspace / "tasks" / "decisions"
+    if not dec_dir.exists():
+        return []
+    unresolved = []
+    for f in sorted(dec_dir.glob("*.md")):
+        text = f.read_text()
+        if "awaiting-operator" in text:
+            unresolved.append(f.stem)
+    return unresolved
+
+
+def _drafting_specs_ready_to_advance(workspace: Path) -> list[str]:
+    """Return names of drafting specs that have research done and decisions resolved.
+
+    A drafting spec is ready to advance when:
+    - No pending research requests reference it (tasks/research/{name}* absent
+      OR matching tasks/research-done/{name}* present)
+    - No unresolved decision entries reference it
+    """
+    drafting_dir = workspace / "specs" / "drafting"
+    if not drafting_dir.exists():
+        return []
+
+    research_dir = workspace / "tasks" / "research"
+    research_done_dir = workspace / "tasks" / "research-done"
+    decisions_dir = workspace / "tasks" / "decisions"
+
+    ready = []
+    for spec_file in sorted(drafting_dir.glob("*.md")):
+        name = spec_file.stem
+
+        # Check for pending research
+        has_pending_research = False
+        if research_dir.exists():
+            for req in research_dir.glob("*.md"):
+                if name in req.stem:
+                    # Check if corresponding done exists
+                    if not research_done_dir.exists() or not any(
+                        d for d in research_done_dir.glob("*.md") if name in d.stem
+                    ):
+                        has_pending_research = True
+                        break
+
+        if has_pending_research:
+            continue
+
+        # Check for unresolved decisions
+        dec_file = decisions_dir / f"{name}.md"
+        if dec_file.exists() and "awaiting-operator" in dec_file.read_text():
+            continue
+
+        ready.append(name)
+
+    return ready
+
+
+# Maximum consecutive rebuild attempts before gating.
+_MAX_REBUILD_ATTEMPTS = 3
+
+
+def _rebuild_attempt_count(workspace: Path, task_name: str) -> int:
+    """Count how many versioned failure reports exist for a task."""
+    failed_dir = workspace / "tasks" / "failed"
+    if not failed_dir.exists():
+        return 0
+    return len(list(failed_dir.glob(f"{task_name}.v*.md")))
+
+
+def _compute_next_dispatch(
+    workspace: Path, config
+) -> tuple[str, str, str, str] | None:
+    """Determine the next pipeline action.
+
+    Returns ``(agent, spec_name, dispatch_type, message)`` or ``None``
+    when the pipeline is idle or gated.
+
+    Dispatch types: "run", "advance", "docs", "rebuild", "auto-promote".
+    The caller handles "auto-promote" directly (no agent invocation).
+
+    Priority order (downstream-first):
+      1. tasks/review/       → verifier
+      2. tasks/verified/     → docs (librarian)
+      3. tasks/failed/       → rebuild + builder
+      4. specs/ready/        → builder
+      5. drafting + ready    → advance (spec)
+      6. tasks/research/     → researcher
+      7. factory-internal low → auto-promote
+      8. specs/inbox/        → spec
+    """
+    # --- GATES: check before dispatching ---
+
+    # Gate: unresolved decisions
+    unresolved = _has_unresolved_decisions(workspace)
+    if unresolved:
+        console.print(f"[yellow]Gate:[/yellow] Unresolved decisions: {', '.join(unresolved)}")
+        console.print(f"  Resolve with: factory decide {{NAME}}")
+        return None
+
+    # Gate: critical/high factory-internal observations
+    fi_items = _list_factory_internal(workspace, include_all=False)
+    critical_high = [i for i in fi_items if i["severity"] in ("critical", "high")]
+    if critical_high:
+        console.print(f"[yellow]Gate:[/yellow] {len(critical_high)} critical/high observations need triage")
+        for item in critical_high[:3]:
+            console.print(f"  {item['severity']:>8}  {item['filename']}")
+        console.print(f"  Resolve with: factory triage {{FILE}} --promote or --dismiss")
+        return None
+
+    # --- DISPATCH TABLE (downstream-first) ---
+
+    # 1. Review items → verifier
+    review_count, review_names = _count_dir(workspace, "tasks/review")
+    if review_count > 0:
+        name = review_names[0]
+        return ("verifier", name, "run",
+                f"Verify the task in tasks/review/: {name}")
+
+    # 2. Verified items → docs (librarian)
+    verified_count, verified_names = _count_dir(workspace, "tasks/verified")
+    if verified_count > 0:
+        return ("librarian", verified_names[0], "docs", "")
+
+    # 3. Failed items → rebuild + builder
+    failed_count, failed_names = _count_dir(workspace, "tasks/failed")
+    if failed_count > 0:
+        name = failed_names[0]
+        attempts = _rebuild_attempt_count(workspace, name)
+        if attempts >= _MAX_REBUILD_ATTEMPTS:
+            console.print(f"[yellow]Gate:[/yellow] {name} has failed {attempts} times — needs human direction")
+            return None
+        return ("builder", name, "rebuild", "")
+
+    # 4. Ready specs → builder
+    ready_count, ready_names = _count_dir(workspace, "specs/ready")
+    if ready_count > 0:
+        name = ready_names[0]
+        spec_file = workspace / "specs" / "ready" / f"{name}.md"
+        spec_content = spec_file.read_text() if spec_file.exists() else ""
+        return ("builder", name, "run",
+                f"Implement this spec: {name}\n\n--- {name}.md ---\n{spec_content}")
+
+    # 5. Drafting specs ready to advance
+    advanceable = _drafting_specs_ready_to_advance(workspace)
+    if advanceable:
+        return ("spec", advanceable[0], "advance", "")
+
+    # 6. Research requests → researcher
+    research_count, research_names = _count_dir(workspace, "tasks/research")
+    if research_count > 0:
+        return ("researcher", research_names[0], "run",
+                f"Research request waiting: {research_names[0]}")
+
+    # 7. Low-severity factory-internal → auto-promote to inbox
+    low_items = [i for i in fi_items if i["severity"] == "low"]
+    if low_items:
+        return ("", low_items[0]["filename"], "auto-promote", "")
+
+    # 8. Inbox specs → spec
+    inbox_count, inbox_names = _count_dir(workspace, "specs/inbox")
+    if inbox_count > 0:
+        name = inbox_names[0]
+        spec_file = workspace / "specs" / "inbox" / f"{name}.md"
+        spec_content = spec_file.read_text() if spec_file.exists() else ""
+        return ("spec", name, "run",
+                f"Work on this specific spec: {name} (currently in inbox/)\n\n"
+                f"--- {name}.md ---\n{spec_content}")
+
+    return None
+
+
 def run_spec_pipeline_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
     """Enforce the single-stage invariant for the spec pipeline.
 
@@ -1676,6 +1953,214 @@ def init_project(workspace: str | None) -> None:
     console.print(f"[green]Registered project:[/green] {project_dir.name}")
     console.print(f"  workspace: {ws}")
     console.print(f"  marker: {marker}")
+
+
+@main.command()
+@click.option("--max-steps", type=int, default=0, help="Stop after N agent runs (0 = unlimited)")
+def start(max_steps: int) -> None:
+    """Automated pipeline loop — dispatches agents until idle or gated.
+
+    Checks pipeline state, dispatches the next agent in priority order
+    (downstream-first), runs post-execution passes, then repeats.
+
+    Stops when:
+    - Pipeline is idle (nothing to do)
+    - A gate is hit (unresolved decisions, critical/high observations)
+    - An agent crashes or times out
+    - A rebuild hits the retry limit
+    - --max-steps limit reached
+
+    \b
+    Examples:
+        factory start               # run until idle or gated
+        factory start --max-steps 3 # run at most 3 agent dispatches
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    workspace = config.workspace
+
+    # Startup validation
+    from .llm import validate_providers
+    for warn in validate_providers(config):
+        console.print(f"  [yellow]⚠  {warn}[/yellow]")
+
+    console.print("[bold]Factory pipeline starting[/bold]")
+
+    step = 0
+    while True:
+        if max_steps > 0 and step >= max_steps:
+            console.print(f"\n[dim]Reached --max-steps limit ({max_steps}). Stopping.[/dim]")
+            break
+
+        dispatch = _compute_next_dispatch(workspace, config)
+        if dispatch is None:
+            console.print("\n[bold]Pipeline idle or gated.[/bold]")
+            print_pipeline_next("", workspace)
+            break
+
+        agent, spec_name_d, dispatch_type, message = dispatch
+
+        # --- Handle auto-promote (no agent invocation) ---
+        if dispatch_type == "auto-promote":
+            fi_dir = workspace / "specs" / "factory-internal"
+            matches, err = _resolve_factory_internal(fi_dir, spec_name_d)
+            if matches:
+                fi_file = matches[0]
+                item = _parse_factory_internal_file(fi_file)
+                slug = item.get("slug", fi_file.stem)
+                obs_text = item.get("observation", "")
+
+                # Write to inbox
+                inbox_file = workspace / "specs" / "inbox" / f"{slug}.md"
+                inbox_file.write_text(
+                    f"# {slug}\n\n"
+                    f"## What I'm Seeing\n{obs_text}\n\n"
+                    f"## What I Want to See\nThis observation should be addressed.\n"
+                )
+
+                # Update factory-internal status
+                now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                old_text = fi_file.read_text()
+                new_text = old_text.replace(
+                    "- status: open",
+                    f"- status: promoted\n- promoted_to: specs/inbox/{slug}.md\n- promoted_at: {now}",
+                    1,
+                )
+                fi_file.write_text(new_text)
+
+                console.print(f"\n[bold]Auto-promoted:[/bold] {slug} → specs/inbox/")
+
+                # Commit
+                subprocess.run(
+                    ["git", "add", str(inbox_file), str(fi_file)],
+                    cwd=workspace, capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "commit", "-m",
+                     f"Auto-promote low-severity observation: {slug}\n\n"
+                     f"Factory start loop promoted {fi_file.name} to specs/inbox/."],
+                    cwd=workspace, capture_output=True, text=True,
+                )
+            continue  # Don't increment step — no agent invocation
+
+        # --- Handle rebuild (prep then builder) ---
+        if dispatch_type == "rebuild":
+            exit_code, rebuild_msg = rebuild_task(workspace, spec_name_d)
+            if exit_code != 0:
+                console.print(f"[red]Rebuild prep failed:[/red] {rebuild_msg}")
+                break
+            console.print(f"[green]Rebuild triggered:[/green] {spec_name_d}")
+            subprocess.run(
+                ["git", "add",
+                 f"specs/ready/{spec_name_d}.md",
+                 f"specs/ready/{spec_name_d}.rebuild.md",
+                 "tasks/failed/"],
+                cwd=workspace, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m",
+                 f"Trigger rebuild: {spec_name_d} (automated via factory start)"],
+                cwd=workspace, capture_output=True, text=True,
+            )
+            # Continue to next iteration — builder will pick up the ready spec
+            continue
+
+        # --- Handle docs (directed librarian) ---
+        if dispatch_type == "docs":
+            # Build the docs context (same as the docs command)
+            context_parts = [f"Update documentation for completed spec: {spec_name_d}\n"]
+            spec_file = workspace / "specs" / "archive" / f"{spec_name_d}.md"
+            if spec_file.exists():
+                context_parts.append(f"--- Archived spec ---\n{spec_file.read_text()}\n")
+            task_file = workspace / "tasks" / "verified" / f"{spec_name_d}.md"
+            if task_file.exists():
+                context_parts.append(f"--- Verified task ---\n{task_file.read_text()}\n")
+            notes_file = workspace / "tasks" / "verified" / f"{spec_name_d}.builder-notes.md"
+            if not notes_file.exists():
+                notes_file = workspace / "tasks" / "review" / f"{spec_name_d}.builder-notes.md"
+            if notes_file.exists():
+                context_parts.append(f"--- Builder notes ---\n{notes_file.read_text()}\n")
+            research_done = workspace / "tasks" / "research-done"
+            if research_done.exists():
+                for brief in sorted(research_done.glob("*.md")):
+                    if spec_name_d in brief.stem:
+                        context_parts.append(f"--- Research: {brief.name} ---\n{brief.read_text()}\n")
+            dec_file = workspace / "tasks" / "decisions" / f"{spec_name_d}.md"
+            if dec_file.exists():
+                context_parts.append(f"--- Decisions ---\n{dec_file.read_text()}\n")
+            for subdir in ["failures", "corrections", "discoveries"]:
+                learn_dir = workspace / "learnings" / subdir
+                if learn_dir.exists():
+                    for f in sorted(learn_dir.glob(f"*{spec_name_d}*")):
+                        context_parts.append(f"--- Learning ({subdir}): {f.name} ---\n{f.read_text()}\n")
+            context_parts.append(
+                "Review the above completed work. Update:\n"
+                "1. memory/shared/KNOWLEDGE.md — if new conventions or decisions were established\n"
+                "2. memory/shared/PROJECTS.md — if a project status changed\n"
+                "3. skills/ — if patterns emerged that should become shared skills\n"
+                "4. learnings/ — if the work produced insights not yet captured\n"
+                "Only update what's warranted. Don't create entries for trivial changes."
+            )
+            message = "\n".join(context_parts)
+            agent = "librarian"
+
+        # --- Handle advance (context-aware spec progression) ---
+        if dispatch_type == "advance":
+            spec_file = _resolve_spec_file(workspace, spec_name_d)
+            if spec_file is None:
+                console.print(f"[red]Error:[/red] Cannot find spec {spec_name_d} to advance")
+                break
+            stage = spec_file.parent.name
+            spec_content = spec_file.read_text()
+            context_parts = [f"Advance this spec: {spec_name_d} (currently in {stage}/)\n"]
+            context_parts.append(f"--- {spec_file.name} ---\n{spec_content}\n")
+            research_done = workspace / "tasks" / "research-done"
+            if research_done.exists():
+                for brief in sorted(research_done.glob("*.md")):
+                    if spec_name_d in brief.stem or brief.stem.startswith("spec-"):
+                        context_parts.append(f"--- Research brief: {brief.name} ---\n{brief.read_text()}\n")
+            dec_file = workspace / "tasks" / "decisions" / f"{spec_name_d}.md"
+            if dec_file.exists():
+                context_parts.append(f"--- Decisions: {dec_file.name} ---\n{dec_file.read_text()}\n")
+            context_parts.append(
+                "Incorporate the research findings and resolved decisions into the spec. "
+                "If the spec is complete, move it to specs/ready/."
+            )
+            message = "\n".join(context_parts)
+            agent = "spec"
+
+        # --- Dispatch the agent ---
+        if agent not in config.agents:
+            console.print(f"[red]Error:[/red] Agent '{agent}' not configured")
+            break
+
+        result, success = _dispatch_agent(config, agent, message, f"{dispatch_type} {spec_name_d}")
+        step += 1
+
+        if not success:
+            console.print(f"\n[red]Agent error — pipeline stopped.[/red]")
+            _send_whatsapp(
+                workspace, "factory-start",
+                f"Pipeline stopped: {agent} error during {dispatch_type} {spec_name_d}",
+                [],
+            )
+            break
+
+    # Final status
+    console.print()
+    console.print(f"[dim]Pipeline loop completed after {step} agent dispatch{'es' if step != 1 else ''}.[/dim]")
+
+    # Send summary WhatsApp
+    next_actions = _compute_next_actions(workspace)
+    _send_whatsapp(
+        workspace, "factory-start",
+        f"Pipeline loop completed ({step} step{'s' if step != 1 else ''})",
+        next_actions,
+    )
 
 
 @main.command()
