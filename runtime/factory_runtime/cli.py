@@ -21,6 +21,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .config import find_workspace, load_config
+from . import apps as apps_mod
 from . import permissions as perms
 from .run_log import RunLogger
 
@@ -39,6 +40,7 @@ PIPELINE_DOWNSTREAM: dict[str, list[tuple[str, Optional[str]]]] = {
         ("tasks/research-done", None),
     ],
     "builder": [
+        ("tasks/planning", None),  # plan artifacts (app-dependent)
         ("tasks/review", "factory run verifier"),
     ],
     "verifier": [
@@ -213,6 +215,13 @@ def _compute_next_actions(workspace: Path) -> list[str]:
                 actions.append(f"factory advance {drafting_names[0]}")
             else:
                 actions.append(f"factory advance NAME  ({len(drafting_names)}: {', '.join(drafting_names[:3])})")
+    # Planning items → builder execute
+    planning_count, planning_names = _count_dir(workspace, "tasks/planning")
+    if planning_count > 0:
+        if len(planning_names) == 1:
+            actions.append(f"factory start  (planned: {planning_names[0]})")
+        else:
+            actions.append(f"factory start  ({len(planning_names)} planned: {', '.join(planning_names[:3])})")
     if ready_count > 0:
         _, ready_names = _count_dir(workspace, "specs/ready")
         if len(ready_names) == 1:
@@ -439,18 +448,21 @@ def _compute_next_dispatch(
     Returns ``(agent, spec_name, dispatch_type, message)`` or ``None``
     when the pipeline is idle or gated.
 
-    Dispatch types: "run", "advance", "docs", "rebuild", "auto-promote".
+    Dispatch types: "run", "advance", "docs", "rebuild", "plan",
+    "auto-promote".
     The caller handles "auto-promote" directly (no agent invocation).
 
     Priority order (downstream-first):
-      1. tasks/review/       → verifier
-      2. tasks/verified/     → docs (librarian)
-      3. tasks/failed/       → rebuild + builder
-      4. specs/ready/        → builder
-      5. drafting + ready    → advance (spec)
-      6. tasks/research/     → researcher
-      7. factory-internal low → auto-promote
-      8. specs/inbox/        → spec
+      1.  tasks/review/        → verifier
+      2.  tasks/verified/      → docs (librarian)
+      3.  tasks/failed/        → rebuild + builder
+      4a. tasks/planning/      → builder (execute planned work)
+      4b. specs/ready/         → builder (plan first, if app declares planning)
+      4c. specs/ready/         → builder (direct, if no planning app)
+      5.  drafting + ready     → advance (spec)
+      6.  tasks/research/      → researcher
+      7.  factory-internal low → auto-promote
+      8.  specs/inbox/         → spec
     """
     # --- GATES: check before dispatching ---
 
@@ -501,12 +513,48 @@ def _compute_next_dispatch(
             return None
         return ("builder", name, "rebuild", "")
 
-    # 4. Ready specs → builder
+    # 4a. Planned items → builder (execute)
+    planning_count, planning_names = _count_dir(workspace, "tasks/planning")
+    if planning_count > 0:
+        name = planning_names[0]
+        plan_dir = workspace / "tasks" / "planning" / name
+        # Find the plan artifact inside the planning directory
+        plan_content = ""
+        if plan_dir.is_dir():
+            plan_files = sorted(plan_dir.glob("*.md"))
+            if plan_files:
+                plan_content = plan_files[0].read_text()
+        elif (workspace / "tasks" / "planning" / f"{name}.md").exists():
+            plan_content = (workspace / "tasks" / "planning" / f"{name}.md").read_text()
+        # Also load the original spec for context
+        spec_file = workspace / "specs" / "ready" / f"{name}.md"
+        spec_content = ""
+        if spec_file.exists():
+            spec_content = f"\n\n--- Original spec: {name}.md ---\n{spec_file.read_text()}"
+        return ("builder", name, "run",
+                f"Execute the plan for: {name}\n\n"
+                f"--- Plan ---\n{plan_content}{spec_content}")
+
+    # 4b/4c. Ready specs → builder (plan first if app declares planning, else direct)
     ready_count, ready_names = _count_dir(workspace, "specs/ready")
     if ready_count > 0:
         name = ready_names[0]
         spec_file = workspace / "specs" / "ready" / f"{name}.md"
         spec_content = spec_file.read_text() if spec_file.exists() else ""
+
+        # Check if any loaded app declares a planning stage
+        planning_stage = apps_mod.has_planning_stage(getattr(config, "apps", []))
+        if planning_stage:
+            return ("builder", name, "plan",
+                    f"Create an execution plan for this spec: {name}\n\n"
+                    f"Write the plan to tasks/planning/{name}/PLAN.md\n"
+                    f"The plan should include:\n"
+                    f"- Ordered tasks with dependencies\n"
+                    f"- Checkpoint declarations (human-verify, decision, human-action) where needed\n"
+                    f"- Expected outputs per task\n\n"
+                    f"Do NOT implement the spec yet — only produce the plan.\n\n"
+                    f"--- {name}.md ---\n{spec_content}")
+
         return ("builder", name, "run",
                 f"Implement this spec: {name}\n\n--- {name}.md ---\n{spec_content}")
 
@@ -2126,9 +2174,11 @@ def init(workspace: str | None) -> None:
     dirs = [
         "specs/inbox", "specs/drafting", "specs/ready", "specs/archive",
         "specs/factory-internal",
-        "tasks/research", "tasks/research-done", "tasks/building",
+        "tasks/research", "tasks/research-done", "tasks/planning",
+        "tasks/building",
         "tasks/review", "tasks/verified", "tasks/failed", "tasks/decisions",
         "tasks/resolved", "tasks/maintenance", "tasks/escalation",
+        "apps",
         "scenarios/meta",
         "skills/shared", "skills/proposed",
         "skills/researcher", "skills/spec", "skills/builder",
@@ -2230,6 +2280,117 @@ _BACKEND_MODEL_MAP: dict[str, dict[str, str]] = {
         "kimi-code/kimi-for-coding": "claude-opus-4-6",
     },
 }
+
+@main.command(name="apps")
+@click.option("--app", "-a", default=None, help="Show detail for a specific app")
+def show_apps(app: str | None) -> None:
+    """Display registered apps and their pipeline definitions."""
+    workspace = find_workspace()
+    loaded = apps_mod.load_all(workspace)
+
+    if not loaded:
+        console.print("[yellow]No apps found in apps/ directory.[/yellow]")
+        return
+
+    if app:
+        target = apps_mod.find_app(loaded, app)
+        if target is None:
+            console.print(f"[red]App '{app}' not found.[/red]")
+            console.print(f"Available: {', '.join(a.name for a in loaded)}")
+            return
+
+        console.print(f"\n[bold]{target.name}[/bold] — {target.description}")
+        console.print(f"  [dim]{target.path}[/dim]\n")
+
+        # Stages
+        if target.stages:
+            console.print("[bold]Pipeline Stages[/bold]")
+            st = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+            st.add_column("Stage", style="cyan")
+            st.add_column("Directory")
+            st.add_column("Producer")
+            st.add_column("Consumer")
+            for s in target.stages:
+                st.add_row(s.name, s.dir, s.producer, ", ".join(s.consumer))
+            console.print(st)
+
+        # Dispatch rules
+        if target.dispatch:
+            console.print("\n[bold]Dispatch Table[/bold]")
+            dt = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+            dt.add_column("Step", style="cyan")
+            dt.add_column("Agent")
+            dt.add_column("Input")
+            dt.add_column("Output")
+            dt.add_column("Validation")
+            for d in target.dispatch:
+                val = ""
+                if d.validate_with:
+                    val = f"{d.validate_with} (x{d.max_validation_rounds})"
+                dt.add_row(d.name, d.agent, d.input, d.output, val)
+            console.print(dt)
+
+        # Checkpoints
+        if target.checkpoints:
+            console.print("\n[bold]Checkpoint Types[/bold]")
+            ct = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+            ct.add_column("Type", style="cyan")
+            ct.add_column("Maps To")
+            ct.add_column("Gate")
+            ct.add_column("Description")
+            for c in target.checkpoints:
+                ct.add_row(c.name, c.maps_to, c.gate, c.description)
+            console.print(ct)
+
+        # Strategies
+        if target.strategies:
+            console.print("\n[bold]Execution Strategies[/bold]")
+            et = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+            et.add_column("Strategy", style="cyan")
+            et.add_column("Condition")
+            et.add_column("Dispatch")
+            et.add_column("Pause At")
+            for s in target.strategies:
+                et.add_row(
+                    s.name, s.condition, s.dispatch,
+                    ", ".join(s.pause_at) if s.pause_at else "",
+                )
+            console.print(et)
+
+        # Config
+        if target.config:
+            console.print("\n[bold]Configuration[/bold]")
+            cft = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+            cft.add_column("Option", style="cyan")
+            cft.add_column("Type")
+            cft.add_column("Default")
+            cft.add_column("Values")
+            for c in target.config:
+                vals = ", ".join(c.values) if c.values else ""
+                cft.add_row(c.name, c.type, str(c.default), vals)
+            console.print(cft)
+
+        return
+
+    # Summary view: all apps
+    console.print("\n[bold]Registered Apps[/bold]\n")
+    t = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+    t.add_column("App", style="cyan")
+    t.add_column("Description")
+    t.add_column("Stages")
+    t.add_column("Dispatch Rules")
+    t.add_column("Checkpoints")
+    for a in loaded:
+        t.add_row(
+            a.name,
+            a.description,
+            str(len(a.stages)),
+            str(len(a.dispatch)),
+            str(len(a.checkpoints)),
+        )
+    console.print(t)
+    console.print(f"\n[dim]Use factory apps --app NAME for detail.[/dim]")
+
 
 # Store original anthropic models so `factory backend default` can restore them.
 # Keyed by agent name → original model string.
@@ -2465,6 +2626,13 @@ def start(max_steps: int) -> None:
             )
             # Continue to next iteration — builder will pick up the ready spec
             continue
+
+        # --- Handle plan (builder produces plan artifact, not code) ---
+        if dispatch_type == "plan":
+            # Ensure planning directory exists for this spec
+            plan_dir = workspace / "tasks" / "planning" / spec_name_d
+            plan_dir.mkdir(parents=True, exist_ok=True)
+            # message is already set by _compute_next_dispatch with plan instructions
 
         # --- Handle docs (directed librarian) ---
         if dispatch_type == "docs":
@@ -2929,6 +3097,7 @@ def status() -> None:
         ("specs/drafting", "drafting"),
         ("specs/ready", "ready"),
         ("tasks/research", "research"),
+        ("tasks/planning", "planning"),
         ("tasks/building", "building"),
         ("tasks/review", "review"),
         ("tasks/verified", "verified"),
@@ -3017,10 +3186,17 @@ def status() -> None:
     if config.project_name:
         project_line = f"\n[dim]  project: {config.project_name} ({config.project_dir})[/dim]\n"
 
+    # ── Apps ──
+    apps_line = ""
+    if config.apps:
+        app_names = ", ".join(a.name for a in config.apps)
+        apps_line = f"\n[dim]  apps: {app_names}[/dim]"
+
     # ── Render ──
     output = Text.from_markup(
         f"{agent_block}\n"
         f"{project_line}"
+        f"{apps_line}"
         f"\n[bold]Pipeline[/bold]\n"
         f"{pipeline_block}"
         f"{fi_block}\n"

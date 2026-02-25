@@ -1,0 +1,104 @@
+# GSD — project execution app.
+#
+# Adds a planning stage between specs/ready/ and tasks/building/.
+# Builder produces a plan artifact; verifier (or spec) validates it
+# before execution begins.  The plan carries checkpoint declarations
+# that the kernel reads to select an execution strategy.
+
+name: gsd
+description: "Project execution — plan, build, verify, ship"
+
+# Additional pipeline stages this app introduces.
+# These are *inserted* into the existing bus — they don't replace it.
+pipeline:
+  stages:
+    - name: planning
+      dir: tasks/planning/
+      producer: builder
+      consumer: [verifier, spec]
+
+  # Artifacts this app produces on the bus.
+  artifacts:
+    plan:
+      location: "tasks/planning/{slug}/PLAN.md"
+      contains: [tasks, dependencies, checkpoints]
+
+    execution-record:
+      location: "tasks/review/{slug}/RECORD.md"
+      contains: [decisions-made, deviations, checkpoint-resolutions]
+
+# Checkpoint types declarable in plan artifacts.
+# Kernel reads these to decide dispatch strategy.
+checkpoints:
+  human-verify:
+    maps_to: tasks/review/
+    gate: soft
+    description: "Show partial result for review before continuing"
+
+  decision:
+    maps_to: tasks/decisions/
+    gate: hard
+    description: "Pick a path — blocks until operator resolves"
+
+  human-action:
+    maps_to: notifications/
+    gate: hard
+    description: "Requires operator action (credentials, external step)"
+
+# Execution strategies — kernel selects based on plan content.
+strategies:
+  autonomous:
+    condition: "no checkpoints in plan"
+    dispatch: single-run
+
+  segmented:
+    condition: "only human-verify checkpoints"
+    dispatch: run-per-segment
+    pause_at: human-verify
+
+  decision-dependent:
+    condition: "decision checkpoints present"
+    dispatch: sequential
+    pause_at: [decision, human-action]
+
+# Dispatch table — what agents run at each stage.
+dispatch:
+  plan:
+    agent: builder
+    input: "specs/ready/{slug}"
+    output: "tasks/planning/{slug}/PLAN.md"
+    validate_with: verifier
+    max_validation_rounds: 3
+
+  execute:
+    agent: builder
+    input: "tasks/planning/{slug}/PLAN.md"
+    output: "tasks/review/{slug}/"
+    strategy: auto  # kernel reads plan, picks from strategies above
+
+  verify:
+    agent: verifier
+    input: "tasks/review/{slug}/"
+    output: "tasks/verified/{slug}/ | tasks/failed/{slug}/"
+
+# Operator-tunable configuration.
+config:
+  profile:
+    type: enum
+    values: [quality, balanced, budget]
+    default: balanced
+    affects:
+      quality:   { builder: claude-opus-4-6, verifier: claude-opus-4-6 }
+      balanced:  { builder: claude-sonnet-4-5, verifier: claude-opus-4-6 }
+      budget:    { builder: claude-sonnet-4-5, verifier: claude-sonnet-4-5 }
+
+  plan_validation:
+    type: bool
+    default: true
+    description: "Validate plan against spec before execution"
+
+  checkpoint_mode:
+    type: enum
+    values: [interactive, auto-approve]
+    default: interactive
+    description: "How checkpoints are handled during execution"

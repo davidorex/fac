@@ -27,7 +27,7 @@ agents:
     memory:
       private: memory/spec/MEMORY.md
       daily: memory/daily/spec/
-    can_read: [specs/, tasks/research-done/, tasks/decisions/, memory/shared/, skills/shared/, skills/spec/, learnings/, universe/, runtime/]
+    can_read: [specs/, tasks/planning/, tasks/research-done/, tasks/decisions/, memory/shared/, skills/shared/, skills/spec/, learnings/, universe/, runtime/]
     can_write: [specs/drafting/, specs/inbox/, specs/ready/, tasks/research/, tasks/decisions/, memory/spec/, memory/daily/spec/, skills/proposed/, notifications/]
     cannot_access: [scenarios/, tasks/building/]
     heartbeat: "0 8 * * *"  # daily at 8am
@@ -43,8 +43,8 @@ agents:
     memory:
       private: memory/builder/MEMORY.md
       daily: memory/daily/builder/
-    can_read: [specs/ready/, tasks/research-done/, tasks/decisions/, skills/shared/, skills/builder/, learnings/, projects/, universe/]
-    can_write: [tasks/building/, tasks/review/, tasks/research/, projects/, specs/archive/, memory/builder/, memory/daily/builder/, skills/proposed/, notifications/]
+    can_read: [specs/ready/, tasks/planning/, tasks/research-done/, tasks/decisions/, skills/shared/, skills/builder/, learnings/, projects/, universe/]
+    can_write: [tasks/planning/, tasks/building/, tasks/review/, tasks/research/, projects/, specs/archive/, memory/builder/, memory/daily/builder/, skills/proposed/, notifications/]
     cannot_access: [scenarios/]
     heartbeat: "*/30 * * * *"  # every 30 minutes when there's work
     shell_access: full
@@ -59,7 +59,7 @@ agents:
     memory:
       private: memory/verifier/MEMORY.md
       daily: memory/daily/verifier/
-    can_read: [specs/ready/, specs/archive/, tasks/review/, scenarios/, skills/shared/, skills/verifier/, projects/, universe/]
+    can_read: [specs/ready/, specs/archive/, tasks/planning/, tasks/review/, scenarios/, skills/shared/, skills/verifier/, projects/, universe/]
     can_write: [tasks/verified/, tasks/review/, tasks/failed/, tasks/research/, scenarios/*/satisfaction.md, memory/verifier/, memory/daily/verifier/, skills/proposed/, notifications/]
     cannot_access: [tasks/building/]
     heartbeat: "*/15 * * * *"  # check for completed work every 15 minutes

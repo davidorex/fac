@@ -34,6 +34,7 @@ resources:
   # --- Task pipeline ---
   "tasks/research/":          { owner: spec,       group: pipeline,  mode: "rw-rw-r--" }
   "tasks/research-done/":     { owner: researcher, group: pipeline,  mode: "rw-r--r--" }
+  "tasks/planning/":          { owner: builder,    group: pipeline,  mode: "rw-rw-r--" }
   "tasks/building/":          { owner: builder,    group: builder,   mode: "rw-------" }
   "tasks/review/":            { owner: builder,    group: pipeline,  mode: "rw-rw-r--" }
   "tasks/verified/":          { owner: verifier,   group: pipeline,  mode: "rw-r--r--" }
@@ -51,6 +52,9 @@ resources:
   # --- Knowledge ---
   "universe/":                { owner: root, group: ops,  mode: "r--r--r--" }
   "learnings/":               { owner: root, group: ops,  mode: "rw-rw-r--" }
+
+  # --- Apps ---
+  "apps/":                    { owner: root, group: root, mode: "rw-r--r--" }
 
   # --- Runtime ---
   "runtime/":                 { owner: root, group: root, mode: "rw-r--r--" }

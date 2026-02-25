@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from . import apps as apps_mod
 from . import permissions as perms
 
 
@@ -34,6 +35,7 @@ class FactoryConfig:
     workspace: Path
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     permissions: perms.PermissionsModel | None = None
+    apps: list[apps_mod.AppDefinition] = field(default_factory=list)
     project_dir: Path | None = None   # set when invoked from a .factory project
     project_name: str | None = None   # derived from project_dir basename
 
@@ -114,6 +116,9 @@ def load_config(workspace: Path | None = None) -> FactoryConfig:
 
     # Load Unix-style permissions model (optional overlay)
     config.permissions = perms.load(ws_path)
+
+    # Load app definitions from apps/ directory
+    config.apps = apps_mod.load_all(ws_path)
 
     # Populate project context if invoked from a .factory directory
     project = find_project_marker()
