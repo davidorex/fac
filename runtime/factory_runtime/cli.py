@@ -376,8 +376,11 @@ def extract_surfaced_observations(
     if not response or response.strip().upper() == "NO_REPLY":
         return []
 
-    # Signal phrases that indicate the agent surfaced something worth persisting
+    # Signal phrases that indicate the agent surfaced something worth persisting.
+    # Two categories: general (any agent) and verification-specific (verifier
+    # reports often contain structured findings in different language).
     signal_phrases = [
+        # General — any agent
         "worth surfacing",
         "worth prioritizing",
         "friction point",
@@ -389,6 +392,17 @@ def extract_surfaced_observations(
         "governance gap",
         "needs prioritizing",
         "worth noting",
+        # Verification findings — verifier uses structured report language
+        "minor observation",
+        "dead variable",
+        "dead code",
+        "cosmetic",
+        "directionally positive",
+        "meta-scenario",
+        "inherited from",
+        "not yet captured",
+        "should be addressed",
+        "could be improved",
     ]
 
     # Check if the agent already wrote to needs.md during this run
