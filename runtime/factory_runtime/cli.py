@@ -222,6 +222,14 @@ def _compute_next_actions(workspace: Path) -> list[str]:
         else:
             actions.append(f"factory rebuild NAME  ({len(failed_names)}: {', '.join(failed_names[:3])})")
 
+    # Librarian: suggest after verification completes (new verified work to document)
+    verified_count, verified_names = _count_dir(workspace, "tasks/verified")
+    if verified_count > 0:
+        if len(verified_names) == 1:
+            actions.append(f"factory docs {verified_names[0]}")
+        else:
+            actions.append(f"factory docs NAME  ({len(verified_names)}: {', '.join(verified_names[:3])})")
+
     return actions
 
 
@@ -1752,6 +1760,126 @@ def show_workspace() -> None:
             style = "yellow" if n > 0 else "dim"
             console.print(f"  {label}: [{style}]{n}[/{style}]")
         console.print()
+
+
+@main.command()
+@click.argument("spec_name")
+def docs(spec_name: str) -> None:
+    """Update documentation after a spec completes the pipeline.
+
+    Gathers the archived spec, verified task, research briefs, decisions,
+    and learnings, then sends the librarian to update shared knowledge,
+    skills, and memory.
+
+        factory docs hello-world-python
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    workspace = config.workspace
+    agent = "librarian"
+
+    if agent not in config.agents:
+        console.print(f"[red]Error:[/red] No librarian agent configured")
+        sys.exit(1)
+
+    agent_config = config.agents[agent]
+
+    # Gather all context for the completed work
+    context_parts = [f"Update documentation for completed spec: {spec_name}\n"]
+
+    # Archived spec
+    spec_file = workspace / "specs" / "archive" / f"{spec_name}.md"
+    if spec_file.exists():
+        context_parts.append(f"--- Archived spec ---\n{spec_file.read_text()}\n")
+
+    # Verified task
+    task_file = workspace / "tasks" / "verified" / f"{spec_name}.md"
+    if task_file.exists():
+        context_parts.append(f"--- Verified task ---\n{task_file.read_text()}\n")
+
+    # Builder notes
+    notes_file = workspace / "tasks" / "verified" / f"{spec_name}.builder-notes.md"
+    if not notes_file.exists():
+        notes_file = workspace / "tasks" / "review" / f"{spec_name}.builder-notes.md"
+    if notes_file.exists():
+        context_parts.append(f"--- Builder notes ---\n{notes_file.read_text()}\n")
+
+    # Research briefs
+    research_done = workspace / "tasks" / "research-done"
+    if research_done.exists():
+        for brief in sorted(research_done.glob("*.md")):
+            if spec_name in brief.stem:
+                context_parts.append(f"--- Research: {brief.name} ---\n{brief.read_text()}\n")
+
+    # Decisions
+    dec_file = workspace / "tasks" / "decisions" / f"{spec_name}.md"
+    if dec_file.exists():
+        context_parts.append(f"--- Decisions ---\n{dec_file.read_text()}\n")
+
+    # Related learnings
+    for subdir in ["failures", "corrections", "discoveries"]:
+        learn_dir = workspace / "learnings" / subdir
+        if learn_dir.exists():
+            for f in sorted(learn_dir.glob(f"*{spec_name}*")):
+                context_parts.append(f"--- Learning ({subdir}): {f.name} ---\n{f.read_text()}\n")
+
+    context_parts.append(
+        "Review the above completed work. Update:\n"
+        "1. memory/shared/KNOWLEDGE.md — if new conventions or decisions were established\n"
+        "2. memory/shared/PROJECTS.md — if a project status changed\n"
+        "3. skills/ — if patterns emerged that should become shared skills\n"
+        "4. learnings/ — if the work produced insights not yet captured\n"
+        "Only update what's warranted. Don't create entries for trivial changes."
+    )
+
+    message = "\n".join(context_parts)
+
+    run_logger = RunLogger(
+        workspace=workspace,
+        agent_name=agent,
+        trigger="message",
+        model=agent_config.model,
+    )
+
+    console.print(f"[bold]Updating docs for {spec_name}[/bold] via {agent} ({agent_config.model})")
+    console.print(f"  Run ID: {run_logger.run_id}")
+
+    from .llm import run_agent as _run_agent
+
+    try:
+        result = _run_agent(
+            config=config,
+            agent_config=agent_config,
+            message=message,
+            is_heartbeat=False,
+            run_logger=run_logger,
+        )
+
+        if result.strip().upper() == "NO_REPLY":
+            console.print(f"  [dim]Librarian: nothing to update[/dim]")
+        else:
+            console.print(f"\n[bold green]Librarian response:[/bold green]")
+            console.print(result)
+
+        console.print(f"\n[dim]Run logged to runs/{run_logger.run_id}/[/dim]")
+        print_pipeline_next(agent, workspace)
+
+        # WhatsApp notification
+        if result.strip().upper() != "NO_REPLY":
+            summary = result.strip()
+            if len(summary) > 500:
+                summary = summary[:497] + "..."
+            next_actions = _compute_next_actions(workspace)
+            _send_whatsapp(workspace, agent, summary, next_actions)
+
+    except Exception as e:
+        console.print(f"[red]Error during docs update:[/red] {e}")
+        run_logger.log_outcome(f"ERROR: {e}")
+        sys.exit(1)
 
 
 @main.command(name="cleanup-specs")
