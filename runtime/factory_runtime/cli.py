@@ -1922,6 +1922,101 @@ def init(workspace: str | None) -> None:
     console.print(f"[green]Workspace initialized at {ws}[/green]")
 
 
+# Model mapping for backend switching.
+# Each anthropic model tier maps to a kimi equivalent.
+_BACKEND_MODEL_MAP: dict[str, dict[str, str]] = {
+    "to_kimi": {
+        "claude-opus-4-6": "kimi-code/kimi-for-coding",
+        "claude-sonnet-4-5": "kimi-code/kimi-for-coding",
+        "claude-haiku-4-5": "kimi-code/kimi-for-coding",
+    },
+    "to_anthropic": {
+        "kimi-code/kimi-for-coding": "claude-opus-4-6",
+    },
+}
+
+# Store original anthropic models so `factory backend default` can restore them.
+# Keyed by agent name → original model string.
+_ORIGINAL_MODELS_FILE = ".factory-original-models.yaml"
+
+
+@main.command()
+@click.argument("backend", type=click.Choice(["kimi", "default"]))
+def backend(backend: str) -> None:
+    """Switch all agents between kimi and anthropic backends.
+
+    \b
+        factory backend kimi      # switch all agents to kimi-cli
+        factory backend default   # restore all agents to anthropic (original models)
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    workspace = config.workspace
+    agents_file = workspace / "agents.yaml"
+    originals_file = workspace / _ORIGINAL_MODELS_FILE
+
+    # Use line-level text replacement to preserve formatting, comments, and structure.
+    text = agents_file.read_text()
+    raw = yaml.safe_load(text)
+
+    if backend == "kimi":
+        # Save originals before switching
+        originals = {}
+        for name, agent_def in raw["agents"].items():
+            originals[name] = {
+                "model": agent_def.get("model", ""),
+                "provider": agent_def.get("provider", "anthropic"),
+            }
+        originals_file.write_text(yaml.dump(originals, default_flow_style=False))
+
+        # Replace provider and model lines in-place
+        for name, agent_def in raw["agents"].items():
+            old_model = agent_def.get("model", "")
+            new_model = _BACKEND_MODEL_MAP["to_kimi"].get(old_model, "kimi-code/kimi-for-coding")
+            text = text.replace(
+                f"    model: {old_model}\n    provider: anthropic",
+                f"    model: {new_model}\n    provider: kimi",
+                1,
+            )
+            console.print(f"  {name}: anthropic/{old_model} → kimi/{new_model}")
+
+    elif backend == "default":
+        if originals_file.exists():
+            originals = yaml.safe_load(originals_file.read_text()) or {}
+        else:
+            originals = {}
+
+        for name, agent_def in raw["agents"].items():
+            old_model = agent_def.get("model", "")
+            old_provider = agent_def.get("provider", "kimi")
+            if name in originals:
+                new_model = originals[name]["model"]
+                new_provider = originals[name]["provider"]
+            else:
+                new_model = old_model
+                new_provider = "anthropic"
+
+            text = text.replace(
+                f"    model: {old_model}\n    provider: {old_provider}",
+                f"    model: {new_model}\n    provider: {new_provider}",
+                1,
+            )
+            console.print(f"  {name}: → {new_provider}/{new_model}")
+
+    agents_file.write_text(text)
+    console.print(f"\n[green]Backend switched to {backend}[/green]")
+
+    # Validate the new config
+    from .llm import validate_providers
+    new_config = load_config()
+    for warn in validate_providers(new_config):
+        console.print(f"  [yellow]⚠  {warn}[/yellow]")
+
+
 @main.command(name="init-project")
 @click.option("--workspace", "-w", type=click.Path(), help="Factory workspace path (auto-detected if omitted)")
 def init_project(workspace: str | None) -> None:

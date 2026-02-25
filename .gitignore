@@ -17,3 +17,6 @@ build/
 
 # Local Claude settings
 .claude/settings.local.json
+
+# Backend switch state
+.factory-original-models.yaml
