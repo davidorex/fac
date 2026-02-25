@@ -1419,6 +1419,235 @@ def rebuild_task(workspace: Path, task_name: str) -> tuple[int, str]:
     return 0, summary
 
 
+def fire_drill(workspace: Path, force: bool) -> tuple[int, list[str]]:
+    """Validate failure workflow functions with synthetic data.
+
+    Orchestrates a sequential drill through ``extract_failure_learnings()``,
+    ``rebuild_task()``, and ``resolve_completed_failures()``, verifying each
+    function produces correct output before proceeding to the next step.  All
+    synthetic artifacts are removed in a ``finally`` block regardless of
+    outcome.
+
+    Returns ``(exit_code, report_lines)`` where exit_code is 0 (PASS) or
+    1 (FAIL), and report_lines is the step-by-step display list.
+    """
+    # Pre-flight guard: scan for stale canary artifacts from a prior interrupted run
+    canary_dirs = [
+        workspace / "tasks" / "failed",
+        workspace / "tasks" / "resolved",
+        workspace / "tasks" / "verified",
+        workspace / "specs" / "ready",
+        workspace / "specs" / "archive",
+        workspace / "learnings" / "failures",
+    ]
+    stale: list[Path] = []
+    for d in canary_dirs:
+        if d.exists():
+            stale.extend(p for p in d.iterdir() if "fire-drill-canary" in p.name)
+
+    if stale:
+        if not force:
+            lines = ["[yellow]Warning:[/yellow] Stale fire-drill-canary artifacts detected:"]
+            for p in stale:
+                lines.append(f"  {p.relative_to(workspace)}")
+            lines.append("Run with --force to remove them before starting.")
+            return 1, lines
+        for p in stale:
+            os.remove(p)
+
+    # Artifact paths referenced across steps and cleanup
+    failed_report = workspace / "tasks" / "failed" / "fire-drill-canary.md"
+    versioned_report = workspace / "tasks" / "failed" / "fire-drill-canary.v1.md"
+    archive_spec = workspace / "specs" / "archive" / "fire-drill-canary.md"
+    ready_spec = workspace / "specs" / "ready" / "fire-drill-canary.md"
+    ready_rebuild = workspace / "specs" / "ready" / "fire-drill-canary.rebuild.md"
+    verified_report = workspace / "tasks" / "verified" / "fire-drill-canary.md"
+    resolved_report = workspace / "tasks" / "resolved" / "fire-drill-canary.v1.md"
+
+    step_results: list[tuple[bool, str, str | None]] = []
+    failed_at: int | None = None
+
+    try:
+        # Step 1 — write synthetic failure report
+        failure_report_text = (
+            "# Verification Report: fire-drill-canary\n\n"
+            "spec: specs/archive/fire-drill-canary.md\n"
+            f"reviewed_at: {datetime.now().isoformat(timespec='seconds')}\n"
+            "verdict: NOT SATISFIED (4/10)\n\n"
+            "## Summary\n"
+            "This is a synthetic failure report created by `factory fire-drill` to validate "
+            "the failure workflow infrastructure.\n\n"
+            "## Artifact-by-Artifact Assessment\n"
+            "- **Synthetic criterion**: The spec required a working implementation. The "
+            "fire-drill canary has no implementation — it is a synthetic validation artifact.\n\n"
+            "## Satisfaction Score: 4/10\n"
+            "Score chosen to be clearly below the passing threshold while exercising the "
+            "score extraction regex in `rebuild_task()`.\n\n"
+            "## Path to Resolution\n"
+            "Implement the missing functionality described in the spec. This section exists "
+            "to validate that `rebuild_task()` correctly extracts it into the rebuild brief.\n\n"
+            "## Generalizable Learning\n"
+            "Untested infrastructure pathways represent latent risk. Failure workflows should "
+            "be validated before they are needed in production, not after the first real "
+            "failure reveals gaps in the processing chain.\n"
+        )
+        try:
+            failed_report.write_text(failure_report_text)
+            step_results.append((True, "Step 1: Synthetic failure report created", None))
+        except Exception as exc:
+            step_results.append((False, "Step 1: Synthetic failure report created", str(exc)))
+            failed_at = 1
+
+        if failed_at is None:
+            # Step 2 — call extract_failure_learnings(), verify output in learnings/failures/
+            try:
+                extract_failure_learnings(workspace)
+                matches = list(workspace.glob("learnings/failures/*fire-drill-canary*"))
+                if not matches:
+                    step_results.append((
+                        False,
+                        "Step 2: Learning extraction verified",
+                        "extract_failure_learnings did not produce expected output",
+                    ))
+                    failed_at = 2
+                else:
+                    step_results.append((True, "Step 2: Learning extraction verified", None))
+            except Exception as exc:
+                step_results.append((False, "Step 2: Learning extraction verified", str(exc)))
+                failed_at = 2
+
+        if failed_at is None:
+            # Step 3 — write synthetic archived spec (prerequisite for rebuild_task)
+            archive_spec_text = (
+                "# fire-drill-canary\n\n"
+                "## Overview\n"
+                "This is a synthetic spec stub created by `factory fire-drill` to satisfy\n"
+                "the prerequisite check in `rebuild_task()`. It is a transient validation\n"
+                "artifact and will be removed at the end of the fire drill.\n"
+            )
+            try:
+                archive_spec.write_text(archive_spec_text)
+                step_results.append((True, "Step 3: Synthetic spec archived", None))
+            except Exception as exc:
+                step_results.append((False, "Step 3: Synthetic spec archived", str(exc)))
+                failed_at = 3
+
+        if failed_at is None:
+            # Step 4 — call rebuild_task(), verify three expected artifacts
+            try:
+                code, msg = rebuild_task(workspace, "fire-drill-canary")
+                if code != 0:
+                    step_results.append((
+                        False,
+                        "Step 4: Rebuild verified (3 artifacts)",
+                        f"rebuild_task returned exit code {code}: {msg}",
+                    ))
+                    failed_at = 4
+                else:
+                    missing = [
+                        label
+                        for p, label in [
+                            (versioned_report, "tasks/failed/fire-drill-canary.v1.md"),
+                            (ready_spec, "specs/ready/fire-drill-canary.md"),
+                            (ready_rebuild, "specs/ready/fire-drill-canary.rebuild.md"),
+                        ]
+                        if not p.exists()
+                    ]
+                    if missing:
+                        step_results.append((
+                            False,
+                            "Step 4: Rebuild verified (3 artifacts)",
+                            f"Missing artifacts: {', '.join(missing)}",
+                        ))
+                        failed_at = 4
+                    else:
+                        step_results.append((True, "Step 4: Rebuild verified (3 artifacts)", None))
+            except Exception as exc:
+                step_results.append((False, "Step 4: Rebuild verified (3 artifacts)", str(exc)))
+                failed_at = 4
+
+        if failed_at is None:
+            # Step 5 — write verified report, call resolve_completed_failures(), verify move
+            verified_text = (
+                "# Verification Report: fire-drill-canary (rebuilt)\n\n"
+                "verdict: SATISFIED (10/10)\n"
+                f"reviewed_at: {datetime.now().isoformat(timespec='seconds')}\n\n"
+                "## Summary\n"
+                "Synthetic verification pass created by `factory fire-drill` to trigger "
+                "`resolve_completed_failures()`.\n"
+            )
+            try:
+                verified_report.write_text(verified_text)
+                resolve_completed_failures(workspace)
+                violations = []
+                if versioned_report.exists():
+                    violations.append(
+                        "tasks/failed/fire-drill-canary.v1.md still exists (not moved)"
+                    )
+                if not resolved_report.exists():
+                    violations.append("tasks/resolved/fire-drill-canary.v1.md does not exist")
+                elif "## Resolution" not in resolved_report.read_text():
+                    violations.append(
+                        "tasks/resolved/fire-drill-canary.v1.md missing ## Resolution section"
+                    )
+                if violations:
+                    step_results.append((
+                        False,
+                        "Step 5: Auto-resolution verified",
+                        "; ".join(violations),
+                    ))
+                    failed_at = 5
+                else:
+                    step_results.append((True, "Step 5: Auto-resolution verified", None))
+            except Exception as exc:
+                step_results.append((False, "Step 5: Auto-resolution verified", str(exc)))
+                failed_at = 5
+
+    finally:
+        # Step 6 — cleanup: remove all synthetic artifacts (silently skip missing)
+        cleanup_paths: list[Path] = [
+            resolved_report,
+            archive_spec,
+            ready_spec,
+            ready_rebuild,
+            verified_report,
+            failed_report,
+            versioned_report,
+        ]
+        cleanup_paths.extend(workspace.glob("learnings/failures/*fire-drill-canary*"))
+        for p in cleanup_paths:
+            if p.exists():
+                os.remove(p)
+        step_results.append((True, "Step 6: Cleanup complete", None))
+
+    # Build report lines
+    report_lines = ["Fire drill: failure workflow validation"]
+    for i, (passed, label, detail) in enumerate(step_results):
+        is_cleanup = (i == len(step_results) - 1)
+        # Insert skipped-steps notice immediately before the cleanup line
+        if is_cleanup and failed_at is not None and failed_at < 5:
+            skip_start = failed_at + 1
+            skip_end = 5
+            if skip_start == skip_end:
+                report_lines.append(f"  — Step {skip_start}: Skipped (prior failure)")
+            else:
+                report_lines.append(f"  — Steps {skip_start}-{skip_end}: Skipped (prior failure)")
+        if passed:
+            report_lines.append(f"  ✓ {label}")
+        else:
+            report_lines.append(
+                f"  ✗ {label}" + (f" — {detail}" if detail else "")
+            )
+
+    report_lines.append("")
+    if failed_at is None:
+        report_lines.append("Result: PASS — all failure workflow functions validated")
+        return 0, report_lines
+    else:
+        report_lines.append(f"Result: FAIL — failure at step {failed_at}")
+        return 1, report_lines
+
+
 # Category display order and labels for `factory needs`
 _CATEGORY_DISPLAY_ORDER: list[tuple[str, str]] = [
     ("permission-change", "Permission Changes"),
@@ -3924,6 +4153,37 @@ def rebuild(task_name: str) -> None:
         sys.exit(2)
 
 
+@main.command(name="fire-drill", short_help="Validate failure workflow with synthetic data")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Remove stale fire-drill-canary artifacts before running.",
+)
+def fire_drill_cmd(force: bool) -> None:
+    """Exercise the failure workflow functions with synthetic data.
+
+    Creates a synthetic failure report, runs extract_failure_learnings(),
+    rebuild_task(), and resolve_completed_failures() in sequence, verifies
+    each produces correct output, then cleans up all synthetic artifacts.
+
+    \b
+    Exit codes:
+      0  All steps passed (PASS)
+      1  A step failed, or stale artifacts detected without --force
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    exit_code, report_lines = fire_drill(config.workspace, force)
+    for line in report_lines:
+        console.print(line)
+    sys.exit(exit_code)
+
+
 def parse_decision_entries(decision_file: Path) -> list[dict]:
     """Parse structured ambiguity entries from a tasks/decisions/ file.
 
@@ -4883,7 +5143,7 @@ def cleanup_factory_internal_cmd(dry_run: bool) -> None:
 _CMD_CATEGORIES: dict[str, list[str]] = {
     "operate": [
         "status", "start", "run", "advance", "decide",
-        "needs", "rebuild", "resolve", "reflect",
+        "needs", "rebuild", "resolve", "fire-drill", "reflect",
     ],
     "inspect": ["apps", "perms", "workspace", "logs", "triage", "docs"],
     "configure": ["init", "init-project", "backend", "scenario", "update-claude-skill"],
