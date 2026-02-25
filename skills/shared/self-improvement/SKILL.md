@@ -10,6 +10,7 @@ description: When you encounter a failure, correction, or new pattern, write a l
 - You discover a better approach to something you've done before
 - You notice a pattern across multiple tasks
 - An external tool or API behaves differently than expected
+- You surface friction, limitations, or architectural gaps during any work (not just reflection passes) — these are observations that the factory should know about
 
 ## What to Do
 
@@ -25,7 +26,9 @@ description: When you encounter a failure, correction, or new pattern, write a l
    - Librarian will review it on next heartbeat
    - Keep it concise — under 200 lines. If it's longer, it's trying to do too much.
 
-3. Update your daily log with a brief note about the learning.
+3. If you surface friction, tooling limitations, or architectural gaps during work, write an observation entry to `memory/{your-agent-name}/needs.md` using the `human-action-needed` skill (category: `observation`). This makes the observation durable — prose in your response text is ephemeral and the factory cannot act on it.
+
+4. Update your daily log with a brief note about the learning.
 
 ## What NOT to Do
 

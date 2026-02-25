@@ -11,7 +11,7 @@ Write a needs entry when you encounter a blocker that:
 - Requires a manual human action outside the pipeline (delete files, set up external service, approve a destructive operation)
 - Cannot be worked around by existing runtime mechanisms (`factory cleanup-specs`, `factory rebuild`, `factory resolve`)
 
-Write an `observation` entry (non-blocking) during a reflection pass when you notice friction, misalignment, or improvement opportunities in your own configuration or behavior.
+Write an `observation` entry (non-blocking) during **any work** — not only reflection passes — when you notice friction, limitations, tooling gaps, architectural issues, or improvement opportunities. Observations in your response text are ephemeral; writing them to `needs.md` makes them durable and actionable by the factory.
 
 Do NOT write a needs entry for:
 - Routine pipeline work another agent handles (write a research request or spec instead)

@@ -354,6 +354,88 @@ def run_research_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
     return log_lines
 
 
+def extract_surfaced_observations(
+    workspace: Path, agent: str, response: str
+) -> list[str]:
+    """Kernel safety net: scan agent response for surfaced observations.
+
+    Agents should write observations to needs.md themselves (via the
+    human-action-needed skill). This pass catches observations that
+    were only mentioned in response prose and persists them.
+
+    Returns log lines describing any extracted observations.
+    """
+    if not response or response.strip().upper() == "NO_REPLY":
+        return []
+
+    # Signal phrases that indicate the agent surfaced something worth persisting
+    signal_phrases = [
+        "worth surfacing",
+        "worth prioritizing",
+        "friction point",
+        "friction worth",
+        "tooling limitation",
+        "operator blindness",
+        "known limitation",
+        "architectural gap",
+        "governance gap",
+        "needs prioritizing",
+        "worth noting",
+    ]
+
+    # Check if the agent already wrote to needs.md during this run
+    needs_file = workspace / "memory" / agent / "needs.md"
+    needs_mtime_before = needs_file.stat().st_mtime if needs_file.exists() else 0
+
+    # Find sentences containing signal phrases
+    observations: list[str] = []
+    for line in response.split("\n"):
+        line_lower = line.lower().strip()
+        if not line_lower:
+            continue
+        for phrase in signal_phrases:
+            if phrase in line_lower:
+                # Clean up markdown formatting
+                clean = line.strip().lstrip("0123456789.-*> ")
+                if clean and len(clean) > 20:
+                    observations.append(clean)
+                break
+
+    if not observations:
+        return []
+
+    # Check if agent already wrote needs during this run
+    needs_mtime_after = needs_file.stat().st_mtime if needs_file.exists() else 0
+    if needs_mtime_after > needs_mtime_before:
+        # Agent updated needs.md — assume it handled its own observations
+        return ["[dim]Agent wrote to needs.md during run — skipping kernel extraction[/dim]"]
+
+    # Write extracted observations to needs.md
+    log: list[str] = []
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    needs_file.parent.mkdir(parents=True, exist_ok=True)
+    entries: list[str] = []
+    for i, obs in enumerate(observations[:3]):  # cap at 3
+        entry_id = f"{agent}-kernel-obs-{now.replace(':', '')}-{i}"
+        entries.append(
+            f"\n## {entry_id}\n"
+            f"- status: open\n"
+            f"- created: {now}\n"
+            f"- category: observation\n"
+            f"- blocked: {obs}\n"
+            f"- context: extracted by kernel from agent response (agent did not write to needs.md)\n"
+            f"\n### Exact Change\n"
+            f"Review and address or dismiss: {obs}\n"
+        )
+        log.append(f"Extracted observation: {obs[:80]}...")
+
+    with open(needs_file, "a") as f:
+        f.writelines(entries)
+
+    return log
+
+
 def run_decision_monitor(workspace: Path, agent: str) -> list[str]:
     """Scan specs in drafting for structured ambiguities and route them.
 
@@ -1282,6 +1364,11 @@ def advance(spec_name: str) -> None:
             else:
                 console.print(f"  [dim]{line}[/dim]")
 
+        # Observation extraction safety net
+        obs_log = extract_surfaced_observations(config.workspace, agent, result)
+        for line in obs_log:
+            console.print(f"  [yellow]{line}[/yellow]")
+
         # WhatsApp notification
         if result.strip().upper() != "NO_REPLY":
             summary = result.strip()
@@ -1428,6 +1515,11 @@ def run(agent: str, spec_name: str | None, task: str | None, message: str | None
                     console.print(f"  [yellow]Warning:[/yellow] {line}")
                 else:
                     console.print(f"  [dim]{line}[/dim]")
+
+        # Post-execution: observation extraction safety net
+        obs_log = extract_surfaced_observations(config.workspace, agent, result)
+        for line in obs_log:
+            console.print(f"  [yellow]{line}[/yellow]")
 
         # Post-execution: WhatsApp notification (skip NO_REPLY heartbeats)
         if result.strip().upper() != "NO_REPLY":
