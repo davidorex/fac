@@ -1,9 +1,9 @@
 # Librarian — Private Memory
 
-## Pipeline Validation State (as of 2026-02-25)
+## Pipeline Validation State (as of 2026-02-26)
 
 **Tested path:** spec → build → verify (happy path, no ambiguities, 10/10 score — hello-world-python)
-**Factory internal specs also verified:** multi-cli-backend-support (9/10), no-ephemeral-suggestions (9/10)
+**Factory internal specs verified:** multi-cli-backend-support (9/10), no-ephemeral-suggestions (9/10), failure-path-fire-drill (9/10)
 **Hard gate path confirmed:** multi-cli-backend-support decision 7.1 exercised the full hard gate cycle — `tasks/decisions/` file written, operator resolved via `factory decide`, pipeline resumed. KNOWLEDGE.md conventions for this path are confirmed operational, not aspirational.
 **Failure workflow functions validated:** `failure-path-fire-drill` (verified 2026-02-26) added `factory fire-drill` which programmatically exercises `extract_failure_learnings()`, `rebuild_task()`, and `resolve_completed_failures()` with synthetic data. These three functions are confirmed structurally sound. Note: the *real* rebuild path — an actual task failing and being processed through the failure pipeline — remains untested by a live run. The functions work; the end-to-end agent behavior is still unexercised.
 **Untested paths:** rebuild path (real failure via Verifier + agent rebuild cycle), research path (tasks/research/ → research-done/)
