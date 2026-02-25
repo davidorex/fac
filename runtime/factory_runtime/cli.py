@@ -1337,6 +1337,12 @@ def run(agent: str, spec_name: str | None, task: str | None, message: str | None
 
     agent_config = config.agents[agent]
 
+    # Startup validation: warn if any provider's CLI binary is missing.
+    # Missing binaries are warnings only — agents with working backends run normally.
+    from .llm import validate_providers
+    for warn in validate_providers(config):
+        console.print(f"  [yellow]⚠  {warn}[/yellow]")
+
     # Determine trigger type
     is_heartbeat = not task and not message
     trigger = "heartbeat" if is_heartbeat else ("task" if task else "message")
@@ -1354,7 +1360,7 @@ def run(agent: str, spec_name: str | None, task: str | None, message: str | None
         model=agent_config.model,
     )
 
-    console.print(f"[bold]Running {agent}[/bold] ({agent_config.model})")
+    console.print(f"[bold]Running {agent}[/bold] ({agent_config.model}, provider: {agent_config.provider})")
     console.print(f"  Trigger: {trigger}")
     console.print(f"  Run ID: {run_logger.run_id}")
 
