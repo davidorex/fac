@@ -1,0 +1,76 @@
+# Unix-style permission model for factory agents.
+#
+# Agents are users. Groups cluster agents by function.
+# Resources have owner:group:mode (rwxrwxrwx for user:group:other).
+# Root is the kernel (runtime code) — not the human operator.
+# The human is the system operator with physical access.
+#
+# cannot_access entries in agents.yaml remain as supplementary deny
+# rules that override any positive permission here.
+
+groups:
+  pipeline: [spec, builder, verifier]
+  ops: [librarian, reviewer, operator]
+  intel: [researcher]
+  wheel: []  # config modification — currently empty
+
+resources:
+  # --- Config ---
+  agents.yaml:                { owner: root, group: wheel,     mode: "rw-rw-r--" }
+  permissions.yaml:           { owner: root, group: root,      mode: "rw-------" }
+
+  # --- Skills ---
+  "skills/shared/":           { owner: root,      group: ops,      mode: "rw-rw-r--" }
+  "skills/proposed/":         { owner: root,      group: root,     mode: "rw-rw-rw-" }
+  "skills/{agent}/":          { owner: "{agent}", group: ops,      mode: "rwxrwx---" }
+
+  # --- Spec pipeline ---
+  "specs/inbox/":             { owner: root, group: pipeline,  mode: "rw-rw-rw-" }
+  "specs/drafting/":          { owner: spec, group: pipeline,  mode: "rw-rw-r--" }
+  "specs/ready/":             { owner: spec, group: pipeline,  mode: "rw-r--r--" }
+  "specs/archive/":           { owner: builder, group: ops,    mode: "rw-r--r--" }
+  "specs/factory-internal/":  { owner: root, group: ops,       mode: "rw-rw-r--" }
+
+  # --- Task pipeline ---
+  "tasks/research/":          { owner: spec,       group: pipeline,  mode: "rw-rw-r--" }
+  "tasks/research-done/":     { owner: researcher, group: pipeline,  mode: "rw-r--r--" }
+  "tasks/building/":          { owner: builder,    group: builder,   mode: "rw-------" }
+  "tasks/review/":            { owner: builder,    group: pipeline,  mode: "rw-rw-r--" }
+  "tasks/verified/":          { owner: verifier,   group: pipeline,  mode: "rw-r--r--" }
+  "tasks/failed/":            { owner: verifier,   group: pipeline,  mode: "rw-r--r--" }
+  "tasks/decisions/":         { owner: spec,       group: wheel,     mode: "rw-rw-r--" }
+  "tasks/escalation/":        { owner: root,       group: root,      mode: "rw-rw-rw-" }
+  "tasks/maintenance/":       { owner: operator,   group: ops,       mode: "rw-r--r--" }
+  "tasks/resolved/":          { owner: root,       group: pipeline,  mode: "rw-r--r--" }
+
+  # --- Memory ---
+  "memory/{agent}/":          { owner: "{agent}", group: "{agent}", mode: "rw-------" }
+  "memory/daily/{agent}/":    { owner: "{agent}", group: "{agent}", mode: "rw-------" }
+  "memory/shared/":           { owner: root,      group: ops,       mode: "rw-rw-r--" }
+
+  # --- Knowledge ---
+  "universe/":                { owner: root, group: ops,  mode: "r--r--r--" }
+  "learnings/":               { owner: root, group: ops,  mode: "rw-rw-r--" }
+
+  # --- Runtime ---
+  "runtime/":                 { owner: root, group: root, mode: "rw-r--r--" }
+
+  # --- External ---
+  "notifications/":           { owner: root, group: root, mode: "rw-rw-rw-" }
+  "projects/":                { owner: root, group: pipeline, mode: "rw-rw-rw-" }
+
+  # --- Isolation ---
+  "scenarios/":               { owner: verifier, group: verifier, mode: "rw-------" }
+
+# Escalation policy: what config changes each group can request via sudo.
+# The kernel auto-applies requests from authorized groups.
+# Requests from unauthorized groups remain open for the human operator.
+escalation:
+  ops:
+    - skill-placement      # move skills between available/always
+    - acl-read-expand      # add paths to can_read
+  wheel:
+    - skill-placement
+    - acl-read-expand
+    - acl-write-expand     # add paths to can_write
+    - model-change         # change agent model/provider

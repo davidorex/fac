@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 from .config import AgentConfig, FactoryConfig
+from . import permissions as perms
 
 
 # Model context window sizes (tokens). Conservative estimates.
@@ -107,6 +108,23 @@ def assemble_system_prompt(
 
     # Access control summary
     parts.append("## Your Access Control\n")
+
+    # Show group membership when permissions model is available
+    if config.permissions is not None:
+        groups = perms.agent_groups(config.permissions, agent_config.name)
+        named_groups = [g for g in groups if g != agent_config.name]
+        if named_groups:
+            parts.append(f"Groups: {', '.join(named_groups)}")
+
+        # Show escalation capabilities
+        esc_classes: list[str] = []
+        for grp in groups:
+            esc_classes.extend(config.permissions.escalation.get(grp, []))
+        if esc_classes:
+            parts.append(
+                f"Can escalate (via config-edit needs): {', '.join(sorted(set(esc_classes)))}"
+            )
+
     parts.append(f"Can read: {', '.join(agent_config.can_read)}")
     parts.append(f"Can write: {', '.join(agent_config.can_write)}")
     if agent_config.cannot_access:

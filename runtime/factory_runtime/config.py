@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from . import permissions as perms
+
 
 @dataclass
 class AgentConfig:
@@ -31,6 +33,7 @@ class AgentConfig:
 class FactoryConfig:
     workspace: Path
     agents: dict[str, AgentConfig] = field(default_factory=dict)
+    permissions: perms.PermissionsModel | None = None
     project_dir: Path | None = None   # set when invoked from a .factory project
     project_name: str | None = None   # derived from project_dir basename
 
@@ -108,6 +111,9 @@ def load_config(workspace: Path | None = None) -> FactoryConfig:
         ws_path = config_path.parent / ws_path
 
     config = FactoryConfig(workspace=ws_path)
+
+    # Load Unix-style permissions model (optional overlay)
+    config.permissions = perms.load(ws_path)
 
     # Populate project context if invoked from a .factory directory
     project = find_project_marker()

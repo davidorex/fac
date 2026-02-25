@@ -21,6 +21,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .config import find_workspace, load_config
+from . import permissions as perms
 from .run_log import RunLogger
 
 console = Console()
@@ -294,6 +295,10 @@ def _run_post_execution_passes(
 
     for line in run_factory_internal_migration(workspace):
         log.append(line)
+
+    # Kernel sudo: process config-edit requests via escalation policy
+    for line in process_config_edits(workspace, agent):
+        log.append(f"  {line}")
 
     return log
 
@@ -1770,6 +1775,229 @@ def cleanup_factory_internal(
     return log
 
 
+def _infer_change_class(block: str) -> str | None:
+    """Infer the change-class from config-edit prose when no explicit field is set.
+
+    Looks for patterns in the ``blocked`` text and ``### Exact Change``
+    section that indicate a skill-placement or acl-read-expand request.
+    """
+    lower = block.lower()
+    # Skill placement: "move X from available to always" or similar
+    if re.search(
+        r"move\s+.+\s+from\s+(?:available|always)\s+to\s+(?:available|always)",
+        lower,
+    ):
+        return "skill-placement"
+    if re.search(r"from\s+`?available`?\s+to\s+`?always`?", lower):
+        return "skill-placement"
+    if re.search(r"in\s+`?available`?,?\s+not\s+`?always`?", lower):
+        return "skill-placement"
+
+    # ACL read expand: "add X to can_read" or "add X to reviewer's can_read"
+    if re.search(r"add\s+.+\s+to\s+.+can_read", lower):
+        return "acl-read-expand"
+
+    return None
+
+
+def _parse_skill_placement_prose(block: str) -> dict[str, str] | None:
+    """Extract skill-placement fields from free-form needs entry prose.
+
+    Parses patterns like:
+    - ``move `reviewer/review-protocol` from `available` to `always` under the reviewer``
+    - ``move `shared/decision-heuristic` from available to always for builder``
+    - ``In agents.yaml, move X from available: to always: under the Y agent's skills block.``
+
+    Returns dict with ``target``, ``from``, ``to``, ``value`` or ``None``.
+    """
+    # Pattern: move SKILL from LIST to LIST [under|for] AGENT
+    m = re.search(
+        r"move\s+`?([a-z][a-z0-9/_-]+)`?\s+from\s+`?(available|always):?`?"
+        r"\s+to\s+`?(available|always):?`?"
+        r"(?:\s+(?:under|for)\s+(?:the\s+)?`?([a-z][a-z0-9_-]+))?",
+        block,
+        re.IGNORECASE,
+    )
+    if m:
+        result: dict[str, str] = {
+            "value": m.group(1),
+            "from": m.group(2).lower().rstrip(":"),
+            "to": m.group(3).lower().rstrip(":"),
+        }
+        if m.group(4):
+            result["target"] = m.group(4).lower().rstrip("'s")
+        return result
+
+    # Pattern: SKILL is in `available`, not `always` (infer target from entry context)
+    m2 = re.search(
+        r"`?([a-z][a-z0-9/_-]+)`?\s+(?:skill\s+)?(?:is\s+)?in\s+`?(available)`?"
+        r",?\s+not\s+`?(always)`?",
+        block,
+        re.IGNORECASE,
+    )
+    if m2:
+        skill_path = m2.group(1)
+        # Try to extract target agent from the skill path (e.g., "reviewer/review-protocol" → "reviewer")
+        target_from_path = skill_path.split("/")[0] if "/" in skill_path else None
+        result2: dict[str, str] = {
+            "value": skill_path,
+            "from": "available",
+            "to": "always",
+        }
+        if target_from_path:
+            result2["target"] = target_from_path
+        return result2
+
+    return None
+
+
+def process_config_edits(workspace: Path, agent: str) -> list[str]:
+    """Kernel sudo: process ``category: config-edit`` needs entries.
+
+    For each open config-edit entry filed by *agent*, checks whether
+    the agent's groups authorize the requested ``change-class`` per the
+    escalation policy in ``permissions.yaml``.
+
+    Authorized changes are applied to ``agents.yaml`` by the kernel
+    (as root).  Unauthorized changes are left open for the human
+    operator.
+
+    Currently supports ``change-class: skill-placement``.
+
+    Returns log lines.
+    """
+    model = perms.load(workspace)
+    if model is None:
+        return []
+
+    needs_file = workspace / "memory" / agent / "needs.md"
+    if not needs_file.exists():
+        return []
+
+    text = needs_file.read_text()
+    blocks = re.split(r"^(?=## )", text, flags=re.MULTILINE)
+
+    log: list[str] = []
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    updates: list[tuple[str, str]] = []
+
+    for block in blocks:
+        block_stripped = block.strip()
+        if not block_stripped:
+            continue
+        heading_m = re.match(r"^## (.+)", block_stripped)
+        if not heading_m:
+            continue
+
+        # Only process open config-edit entries
+        status_m = re.search(r"^- status:\s*(\S+)", block_stripped, re.MULTILINE)
+        cat_m = re.search(r"^- category:\s*(\S+)", block_stripped, re.MULTILINE)
+
+        if not status_m or status_m.group(1).strip() != "open":
+            continue
+        if not cat_m or cat_m.group(1).strip() != "config-edit":
+            continue
+
+        entry_id = heading_m.group(1).strip()
+
+        # Parse structured fields
+        def _get(field: str, _b: str = block_stripped) -> str | None:
+            m = re.search(rf"^- {re.escape(field)}:\s*(.+)$", _b, re.MULTILINE)
+            return m.group(1).strip() if m else None
+
+        # Determine change-class: explicit field or inferred from content
+        change_class = _get("change-class")
+        if not change_class:
+            change_class = _infer_change_class(block_stripped)
+        if not change_class:
+            log.append(
+                f"[dim]Config-edit {entry_id}: cannot determine "
+                f"change-class — awaiting operator[/dim]"
+            )
+            continue
+
+        # Check escalation authorization
+        if not perms.can_escalate(model, agent, change_class):
+            log.append(
+                f"[dim]Config-edit {entry_id}: {agent} not authorized "
+                f"for {change_class} — awaiting operator[/dim]"
+            )
+            continue
+
+        # --- Apply the change ---
+        if change_class == "skill-placement":
+            # Try structured fields first, fall back to prose parsing
+            target = _get("target")
+            from_list = _get("from")
+            to_list = _get("to")
+            skill_value = _get("value")
+
+            if not all([target, from_list, to_list, skill_value]):
+                # Parse from Exact Change section or blocked text
+                parsed = _parse_skill_placement_prose(block_stripped)
+                if parsed:
+                    target = target or parsed.get("target")
+                    from_list = from_list or parsed.get("from")
+                    to_list = to_list or parsed.get("to")
+                    skill_value = skill_value or parsed.get("value")
+
+            if (
+                target is None
+                or from_list is None
+                or to_list is None
+                or skill_value is None
+            ):
+                log.append(
+                    f"[yellow]Config-edit {entry_id}: cannot parse "
+                    f"skill-placement fields — awaiting operator[/yellow]"
+                )
+                continue
+
+            config_path = workspace / "agents.yaml"
+            try:
+                yaml_text = config_path.read_text()
+                new_text = perms.apply_skill_placement(
+                    yaml_text, target, skill_value, from_list, to_list
+                )
+                config_path.write_text(new_text)
+                log.append(
+                    f"[green]Sudo: applied {entry_id} — moved "
+                    f"{skill_value} from {target}'s {from_list} to "
+                    f"{to_list}[/green]"
+                )
+            except (ValueError, OSError) as e:
+                log.append(
+                    f"[red]Sudo failed for {entry_id}: {e}[/red]"
+                )
+                continue
+        else:
+            log.append(
+                f"[dim]Config-edit {entry_id}: change-class "
+                f"'{change_class}' not yet implemented[/dim]"
+            )
+            continue
+
+        # Mark the needs entry as resolved
+        old_block = block
+        new_block = re.sub(
+            r"(^- status:\s*)open",
+            rf"\g<1>resolved\n- resolved_at: {now}\n- resolved_by: kernel-sudo",
+            old_block,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        updates.append((old_block, new_block))
+
+    # Apply needs.md updates
+    if updates:
+        new_text = text
+        for old, new in updates:
+            new_text = new_text.replace(old, new, 1)
+        needs_file.write_text(new_text)
+
+    return log
+
+
 def _agent_yaml_block(workspace: Path, agent_name: str) -> str:
     """Return the agents.yaml YAML block for *agent_name* as a plain-text string.
 
@@ -1900,7 +2128,7 @@ def init(workspace: str | None) -> None:
         "specs/factory-internal",
         "tasks/research", "tasks/research-done", "tasks/building",
         "tasks/review", "tasks/verified", "tasks/failed", "tasks/decisions",
-        "tasks/resolved", "tasks/maintenance",
+        "tasks/resolved", "tasks/maintenance", "tasks/escalation",
         "scenarios/meta",
         "skills/shared", "skills/proposed",
         "skills/researcher", "skills/spec", "skills/builder",
@@ -1920,6 +2148,74 @@ def init(workspace: str | None) -> None:
         (ws / d).mkdir(parents=True, exist_ok=True)
 
     console.print(f"[green]Workspace initialized at {ws}[/green]")
+
+
+@main.command(name="perms")
+@click.option("--agent", "-a", default=None, help="Show effective access for a specific agent")
+def show_perms(agent: str | None) -> None:
+    """Display the Unix-style permissions model."""
+    workspace = find_workspace()
+    model = perms.load(workspace)
+    if model is None:
+        console.print("[yellow]No permissions.yaml found in workspace.[/yellow]")
+        return
+
+    config = load_config(workspace)
+
+    # --- Groups ---
+    console.print("\n[bold]Groups[/bold]")
+    groups_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+    groups_table.add_column("Group", style="cyan")
+    groups_table.add_column("Members")
+    for name, members in model.groups.items():
+        groups_table.add_row(name, ", ".join(members) if members else "[dim](empty)[/dim]")
+    console.print(groups_table)
+
+    # --- Resources ---
+    console.print("\n[bold]Resources[/bold]")
+    res_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+    res_table.add_column("Path", style="cyan", min_width=28)
+    res_table.add_column("Owner", min_width=10)
+    res_table.add_column("Group", min_width=10)
+    res_table.add_column("Mode", style="dim")
+    for res in model.resources:
+        res_table.add_row(res.path, res.owner, res.group, str(res.mode))
+    console.print(res_table)
+
+    # --- Escalation ---
+    console.print("\n[bold]Escalation Policy[/bold]")
+    esc_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+    esc_table.add_column("Group", style="cyan")
+    esc_table.add_column("Authorized Changes")
+    for grp, classes in model.escalation.items():
+        esc_table.add_row(grp, ", ".join(classes))
+    console.print(esc_table)
+
+    # --- Agent detail (optional) ---
+    if agent:
+        if agent not in config.agents:
+            console.print(f"\n[red]Unknown agent: {agent}[/red]")
+            return
+
+        console.print(f"\n[bold]Agent: {agent}[/bold]")
+        groups = perms.agent_groups(model, agent)
+        named = [g for g in groups if g != agent]
+        console.print(f"  Groups: {', '.join(named) if named else '(none)'}")
+
+        esc_classes: list[str] = []
+        for grp in groups:
+            esc_classes.extend(model.escalation.get(grp, []))
+        if esc_classes:
+            console.print(f"  Can escalate: {', '.join(sorted(set(esc_classes)))}")
+        else:
+            console.print("  Can escalate: [dim](nothing)[/dim]")
+
+        all_agents = list(config.agents.keys())
+        can_read, can_write = perms.effective_access(model, agent, all_agents)
+        console.print(f"  Effective read:  {', '.join(can_read)}")
+        console.print(f"  Effective write: {', '.join(can_write)}")
+
+    console.print()
 
 
 # Model mapping for backend switching.

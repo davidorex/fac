@@ -1,10 +1,20 @@
-"""Access control enforcement for agent filesystem operations."""
+"""Access control enforcement for agent filesystem operations.
+
+When ``permissions.yaml`` is present the Unix-style permissions model
+is the primary authority for read/write decisions.  The flat ACL
+fields in ``agents.yaml`` (``can_read`` / ``can_write``) serve as
+fallback when no resource rule matches a given path.
+
+``cannot_access`` entries are always checked first and override any
+positive permission.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
 from .config import AgentConfig
+from . import permissions as perms
 
 
 class AccessDenied(Exception):
@@ -55,14 +65,23 @@ def check_access(
     workspace: Path,
     operation: str,
     target_path: str,
+    permissions: perms.PermissionsModel | None = None,
 ) -> None:
     """Enforce access control for a filesystem operation.
+
+    When *permissions* is provided, the Unix-style model is checked
+    first.  If no resource rule covers the path, the flat ACL
+    (``can_read`` / ``can_write``) is used as fallback.
+
+    ``cannot_access`` entries are always checked first and override
+    any positive permission from either model.
 
     Args:
         agent_config: The agent's configuration with access rules.
         workspace: The workspace root path.
         operation: 'read' or 'write'.
         target_path: The path being accessed (relative to workspace or absolute).
+        permissions: Optional Unix-style permissions model.
 
     Raises:
         AccessDenied: If the operation is not permitted.
@@ -85,25 +104,8 @@ def check_access(
 
     path_norm = _normalize(path_str)
 
-    # universe/ is always read-only
-    if path_norm.startswith("universe") and operation == "write":
-        raise AccessDenied(
-            agent_config.name,
-            operation,
-            target_path,
-            "universe/ is read-only for all agents",
-        )
-
-    # agents.yaml is always read-only
-    if path_norm == "agents.yaml" and operation == "write":
-        raise AccessDenied(
-            agent_config.name,
-            operation,
-            target_path,
-            "agents.yaml is read-only — only the human edits this",
-        )
-
-    # Check cannot_access first — these are absolute denials
+    # Check cannot_access first — these are absolute denials that override
+    # any positive permission from either model.
     for denied in agent_config.cannot_access:
         if _path_matches_rule(path_norm, denied):
             raise AccessDenied(
@@ -113,7 +115,42 @@ def check_access(
                 f"cannot_access rule: {denied}",
             )
 
-    # Check operation-specific rules
+    # --- Unix-style permissions model (primary when available) ---
+    if permissions is not None:
+        resource = perms.find_resource(
+            permissions, path_norm, agent_config.name
+        )
+        if resource is not None:
+            allowed, reason = perms.check(
+                permissions, agent_config.name, operation, path_norm
+            )
+            if allowed:
+                return
+            raise AccessDenied(
+                agent_config.name, operation, target_path, reason
+            )
+        # No resource rule matched — fall through to flat ACL
+
+    # --- Flat ACL fallback (agents.yaml can_read / can_write) ---
+
+    # universe/ is always read-only
+    if path_norm.startswith("universe") and operation == "write":
+        raise AccessDenied(
+            agent_config.name,
+            operation,
+            target_path,
+            "universe/ is read-only for all agents",
+        )
+
+    # agents.yaml is always read-only (unless kernel sudo applies it)
+    if path_norm == "agents.yaml" and operation == "write":
+        raise AccessDenied(
+            agent_config.name,
+            operation,
+            target_path,
+            "agents.yaml is read-only — config changes go through sudo",
+        )
+
     if operation == "read":
         rules = agent_config.can_read
         # universe/ is always readable
