@@ -51,7 +51,7 @@ Agents write to `memory/{agent}/needs.md` when hitting blockers that require hum
 `scenarios/` is inaccessible to Builder — holdout by design. Project scenarios live in `scenarios/{project}/`. The meta-scenario for factory infrastructure is `scenarios/meta/factory-itself.md`. Verifier evaluates against holdout scenarios independently; meta-scenario evaluation is directional (not pass/fail). Commands: `factory scenario init-meta`, `factory scenario new`, `factory scenario list`.
 
 ### Agent Reflection
-`factory reflect [AGENT]` runs sequential reflection passes across pipeline agents (or a single named agent). Each agent receives its own agents.yaml config block plus the `agent-reflection` skill content, and writes observations to its `memory/{agent}/needs.md`. Observations have `category: observation` and appear separately in `factory needs` output.
+`factory reflect [AGENT]` runs sequential reflection passes across pipeline agents (or a single named agent). Each agent receives its own agents.yaml config block plus the `agent-reflection` skill content, and writes observations to its `memory/{agent}/needs.md`. Observations have `category: observation` and are automatically promoted to `specs/factory-internal/` by the kernel post-run pass — they do not appear in `factory needs` output.
 
 ### Multi-Backend Dispatch Architecture
 `llm.py` is a dispatcher; backends live in `runtime/factory_runtime/backends/`. `get_backend(provider)` in `backends/__init__.py` returns the correct backend. `validate_providers()` checks binary availability at startup — missing binary produces a warning but does not block other agents.
