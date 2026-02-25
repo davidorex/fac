@@ -2286,14 +2286,60 @@ def _scenario_coverage(workspace: Path) -> dict:
 @click.group()
 @click.pass_context
 def main(ctx: click.Context) -> None:
-    """Factory — local runtime for a team of persistent AI agents."""
+    """Factory — local runtime for persistent AI agents.
+
+    \b
+    Operate:
+      status          Pipeline monitor — agents, queues, next actions
+      start           Automated dispatch loop (runs until idle or gated)
+      run AGENT       Invoke a specific agent (heartbeat if no task given)
+      advance SPEC    Gather context and finalize a drafting spec
+      decide SPEC     Respond to hard decision gates
+      needs           Show agent blockers and pending requests
+      rebuild TASK    Re-queue failed work with failure report
+      resolve TASK    Mark a failed task as resolved without rebuild
+      reflect [AGENT] Agent self-examination pass
+
+    \b
+    Inspect:
+      apps            Registered workflow apps and their pipelines
+      perms           Unix-style permissions model (groups, modes)
+      workspace       Directory tree with status indicators
+      logs [AGENT]    Recent run logs
+      triage          Manage factory-internal observations
+      docs SPEC       Update docs after spec completes pipeline
+
+    \b
+    Configure:
+      init            Create workspace directory structure
+      init-project    Register cwd as a factory project (.factory marker)
+      backend         Switch between kimi and anthropic backends
+      scenario        Manage scenario holdout files for verification
+
+    \b
+    GC (also runs automatically after every agent):
+      cleanup-specs             Spec pipeline staleness
+      cleanup-tasks             tasks/review/ staleness
+      cleanup-research          tasks/research/ staleness
+      cleanup-factory-internal  Observation lifecycle
+    """
     ctx.ensure_object(dict)
 
 
-@main.command()
+@main.command(short_help="Create workspace directory structure")
 @click.option("--workspace", "-w", type=click.Path(), help="Workspace root directory")
 def init(workspace: str | None) -> None:
-    """Create the workspace directory structure from agents.yaml."""
+    """Create the workspace directory structure.
+
+    Creates all pipeline directories (specs/, tasks/, memory/, etc.),
+    agent-specific memory directories, learnings, universe, and the
+    apps/ directory.  Safe to re-run — uses mkdir -p semantics.
+
+    \b
+    Example:
+        factory init
+        factory init --workspace /path/to/factory
+    """
     ws = Path(workspace) if workspace else Path.cwd()
 
     dirs = [
@@ -2325,10 +2371,23 @@ def init(workspace: str | None) -> None:
     console.print(f"[green]Workspace initialized at {ws}[/green]")
 
 
-@main.command(name="perms")
+@main.command(name="perms", short_help="Unix-style permissions (groups, modes, escalation)")
 @click.option("--agent", "-a", default=None, help="Show effective access for a specific agent")
 def show_perms(agent: str | None) -> None:
-    """Display the Unix-style permissions model."""
+    """Display the Unix-style permissions model.
+
+    Shows groups (pipeline, ops, intel, wheel), resources with
+    owner:group:mode, and the escalation policy for kernel sudo.
+
+    \b
+    With --agent, shows effective read/write access and escalation
+    capabilities for that specific agent.
+
+    \b
+    Examples:
+        factory perms                # full permissions table
+        factory perms --agent builder  # builder's effective access
+    """
     workspace = find_workspace()
     model = perms.load(workspace)
     if model is None:
@@ -2406,10 +2465,24 @@ _BACKEND_MODEL_MAP: dict[str, dict[str, str]] = {
     },
 }
 
-@main.command(name="apps")
+@main.command(name="apps", short_help="Registered workflow apps and pipelines")
 @click.option("--app", "-a", default=None, help="Show detail for a specific app")
 def show_apps(app: str | None) -> None:
-    """Display registered apps and their pipeline definitions."""
+    """Display registered workflow apps from apps/.
+
+    Apps are YAML-declared workflows over the factory's agents and bus.
+    Each app can introduce pipeline stages, dispatch rules, checkpoint
+    types, and execution strategies.
+
+    \b
+    With --app, shows the full definition: stages, dispatch table,
+    checkpoints, strategies, and configuration options.
+
+    \b
+    Examples:
+        factory apps              # list all registered apps
+        factory apps --app gsd    # full GSD app detail
+    """
     workspace = find_workspace()
     loaded = apps_mod.load_all(workspace)
 
@@ -2522,12 +2595,16 @@ def show_apps(app: str | None) -> None:
 _ORIGINAL_MODELS_FILE = ".factory-original-models.yaml"
 
 
-@main.command()
+@main.command(short_help="Switch all agents between kimi and anthropic")
 @click.argument("backend", type=click.Choice(["kimi", "default"]))
 def backend(backend: str) -> None:
     """Switch all agents between kimi and anthropic backends.
 
+    Saves original model/provider mappings before switching so that
+    'factory backend default' restores them exactly.
+
     \b
+    Examples:
         factory backend kimi      # switch all agents to kimi-cli
         factory backend default   # restore all agents to anthropic (original models)
     """
@@ -2599,13 +2676,19 @@ def backend(backend: str) -> None:
         console.print(f"  [yellow]⚠  {warn}[/yellow]")
 
 
-@main.command(name="init-project")
+@main.command(name="init-project", short_help="Register cwd as a factory project")
 @click.option("--workspace", "-w", type=click.Path(), help="Factory workspace path (auto-detected if omitted)")
 def init_project(workspace: str | None) -> None:
     """Register the current directory as a factory project.
 
     Writes a .factory marker file pointing to the factory workspace.
     After this, all factory commands work from within this directory.
+    The CLI resolves upward from cwd to find the marker (like .git).
+
+    \b
+    Example:
+        cd ~/Projects/my-app
+        factory init-project
     """
     project_dir = Path.cwd()
     marker = project_dir / ".factory"
@@ -2638,20 +2721,33 @@ def init_project(workspace: str | None) -> None:
     console.print(f"  marker: {marker}")
 
 
-@main.command()
+@main.command(short_help="Automated dispatch loop (downstream-first)")
 @click.option("--max-steps", type=int, default=0, help="Stop after N agent runs (0 = unlimited)")
 def start(max_steps: int) -> None:
     """Automated pipeline loop — dispatches agents until idle or gated.
 
-    Checks pipeline state, dispatches the next agent in priority order
-    (downstream-first), runs post-execution passes, then repeats.
+    Reads pipeline state, picks the highest-priority action, dispatches
+    the right agent, runs post-execution passes (GC, decision monitor,
+    observation extraction, kernel sudo), then repeats.
 
+    \b
+    Dispatch priority (downstream-first):
+      1. tasks/review/        → verifier
+      2. tasks/verified/      → librarian (docs)
+      3. tasks/failed/        → rebuild + builder
+      4. tasks/planning/      → builder (execute plan)
+      5. specs/ready/         → builder (plan first if app, else direct)
+      6. drafting + research  → advance (spec) or researcher
+      7. factory-internal low → auto-promote to inbox
+      8. specs/inbox/         → spec
+
+    \b
     Stops when:
-    - Pipeline is idle (nothing to do)
-    - A gate is hit (unresolved decisions, critical/high observations)
-    - An agent crashes or times out
-    - A rebuild hits the retry limit
-    - --max-steps limit reached
+      - Pipeline is idle (nothing to do)
+      - A gate is hit (unresolved decisions, critical observations)
+      - An agent crashes or times out
+      - A rebuild hits the retry limit (3)
+      - --max-steps limit reached
 
     \b
     Examples:
@@ -2875,14 +2971,15 @@ def start(max_steps: int) -> None:
     )
 
 
-@main.command()
+@main.command(short_help="Advance a drafting spec with gathered context")
 @click.argument("spec_name")
 def advance(spec_name: str) -> None:
     """Advance a spec that has unblocking context (research, decisions).
 
-    Determines the right agent and constructs a directed message with
-    all available context: research briefs, resolved decisions, and
-    the current spec content.
+    Gathers research briefs from tasks/research-done/, resolved
+    decisions from tasks/decisions/, and the spec itself, then
+    dispatches the spec agent with a directed message to finalize.
+    Use this instead of 'factory run spec' when context is ready.
 
         factory advance multi-cli-backend-support
     """
@@ -3023,17 +3120,33 @@ def advance(spec_name: str) -> None:
         sys.exit(1)
 
 
-@main.command()
+@main.command(short_help="Invoke a specific agent (heartbeat if no task)")
 @click.argument("agent")
 @click.argument("spec_name", required=False)
 @click.option("--task", type=click.Path(exists=True), help="Task file to assign")
 @click.option("--message", "-m", type=str, help="Free text message for the agent")
 def run(agent: str, spec_name: str | None, task: str | None, message: str | None) -> None:
-    """Invoke an agent. Heartbeat mode if no --task or --message given.
+    """Invoke an agent directly.
 
-    Optionally pass a SPEC_NAME to direct the agent to a specific spec:
+    Without --task or --message, runs in heartbeat mode (agent checks
+    its inbox and memory, responds NO_REPLY if nothing needs attention).
 
-        factory run spec multi-cli-backend-support
+    With SPEC_NAME, resolves the spec from inbox/drafting/ready and
+    sends it as a directed message.
+
+    \b
+    Post-execution passes run automatically:
+      - 5 GC passes (specs, tasks, research, decisions, research-done)
+      - Decision monitor (detects ambiguity, writes gates)
+      - Observation extraction and promotion
+      - Kernel sudo (processes config-edit requests)
+      - WhatsApp notification
+
+    \b
+    Examples:
+        factory run spec                          # spec heartbeat
+        factory run builder my-feature            # direct builder to a spec
+        factory run researcher -m "investigate X" # free-text message
     """
     try:
         config = load_config()
@@ -3193,9 +3306,19 @@ def run(agent: str, spec_name: str | None, task: str | None, message: str | None
         sys.exit(1)
 
 
-@main.command()
+@main.command(short_help="Pipeline monitor — agents, queues, next actions")
 def status() -> None:
-    """Show factory status: agents, pipeline, and next actions."""
+    """Show factory status — the process monitor.
+
+    \b
+    Displays:
+      - Agent table: name, model, last run age, idle status
+      - Loaded apps (e.g. gsd)
+      - Pipeline: non-empty directories with item counts and names
+      - Decision gates and pending needs
+      - Factory-internal observations by severity
+      - Computed next actions (copy-pasteable commands)
+    """
     try:
         config = load_config()
     except FileNotFoundError as e:
@@ -3336,11 +3459,21 @@ def status() -> None:
         console.print(f"  {line}")
 
 
-@main.command()
+@main.command(short_help="Recent run logs (per-agent or all)")
 @click.argument("agent", required=False)
 @click.option("--last", "-n", type=int, default=5, help="Number of recent runs to show")
 def logs(agent: str | None, last: int) -> None:
-    """Show recent run logs."""
+    """Show recent run logs from runs/ directory.
+
+    Each entry shows the run ID, trigger type, model, tool call count,
+    and first 100 chars of the outcome.
+
+    \b
+    Examples:
+        factory logs               # last 5 runs across all agents
+        factory logs builder       # last 5 builder runs
+        factory logs -n 20         # last 20 runs
+    """
     try:
         config = load_config()
     except FileNotFoundError as e:
@@ -3387,9 +3520,13 @@ def logs(agent: str | None, last: int) -> None:
         )
 
 
-@main.command(name="workspace")
+@main.command(name="workspace", short_help="Directory tree with item counts")
 def show_workspace() -> None:
-    """Show workspace tree with status indicators."""
+    """Show the workspace directory tree with item counts per stage.
+
+    Displays specs, tasks, skills, memory, and learnings directories
+    with non-zero counts highlighted.
+    """
     try:
         config = load_config()
     except FileNotFoundError as e:
@@ -3444,15 +3581,17 @@ def show_workspace() -> None:
         console.print()
 
 
-@main.command()
+@main.command(short_help="Update docs after spec completes pipeline")
 @click.argument("spec_name")
 def docs(spec_name: str) -> None:
     """Update documentation after a spec completes the pipeline.
 
     Gathers the archived spec, verified task, research briefs, decisions,
     and learnings, then sends the librarian to update shared knowledge,
-    skills, and memory.
+    skills, and memory.  Clears the verified task on success.
 
+    \b
+    Example:
         factory docs hello-world-python
     """
     try:
@@ -3583,7 +3722,7 @@ def docs(spec_name: str) -> None:
         sys.exit(1)
 
 
-@main.command(name="cleanup-specs")
+@main.command(name="cleanup-specs", short_help="Remove stale specs (upstream copies)")
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would be cleaned without deleting.")
 def cleanup_specs_cmd(dry_run: bool) -> None:
     """Remove stale spec files that have advanced to a downstream pipeline stage.
@@ -3592,6 +3731,8 @@ def cleanup_specs_cmd(dry_run: bool) -> None:
     one of inbox / drafting / ready / archive.  When a file appears in a
     downstream stage, copies in upstream stages are removed (archive is
     never touched).
+
+    Also runs automatically after every agent execution.
     """
     try:
         config = load_config()
@@ -3612,13 +3753,15 @@ def cleanup_specs_cmd(dry_run: bool) -> None:
         console.print(f"  {display}")
 
 
-@main.command(name="cleanup-tasks")
+@main.command(name="cleanup-tasks", short_help="Remove stale review tasks (verified/failed)")
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would be cleaned without deleting.")
 def cleanup_tasks_cmd(dry_run: bool) -> None:
     """Remove stale task files from tasks/review/ that have been verified or failed.
 
     A tasks/review/ file is stale when the same filename exists in
     tasks/verified/ or tasks/failed/ (active, non-versioned slot only).
+
+    Also runs automatically after every agent execution.
     """
     try:
         config = load_config()
@@ -3638,13 +3781,15 @@ def cleanup_tasks_cmd(dry_run: bool) -> None:
         console.print(f"  {display}")
 
 
-@main.command(name="cleanup-research")
+@main.command(name="cleanup-research", short_help="Remove stale research requests (completed)")
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would be cleaned without deleting.")
 def cleanup_research_cmd(dry_run: bool) -> None:
     """Remove stale research requests that have completed deliverables.
 
     A tasks/research/ file is stale when the same filename exists in
     tasks/research-done/ (the completed brief).
+
+    Also runs automatically after every agent execution.
     """
     try:
         config = load_config()
@@ -3664,7 +3809,7 @@ def cleanup_research_cmd(dry_run: bool) -> None:
         console.print(f"  {display}")
 
 
-@main.command()
+@main.command(short_help="Mark a failed task as resolved (no rebuild)")
 @click.argument("task_name")
 @click.option("--reason", required=True, help="How the failure was resolved.")
 def resolve(task_name: str, reason: str) -> None:
@@ -3714,7 +3859,7 @@ def resolve(task_name: str, reason: str) -> None:
         sys.exit(1)
 
 
-@main.command()
+@main.command(short_help="Re-queue failed work with failure report")
 @click.argument("task_name")
 def rebuild(task_name: str) -> None:
     """Trigger a rebuild for a failed task.
@@ -3902,7 +4047,7 @@ def resolve_decision(
     return 0, f"Resolved: {entry_id} → {answer}"
 
 
-@main.command()
+@main.command(short_help="Respond to hard decision gates")
 @click.argument("spec_name", required=False)
 @click.option("--answer", "-a", type=str, help="Answer for a specific entry (use with --entry).")
 @click.option("--entry", "-e", type=str, help="Entry ID to resolve.")
@@ -3914,7 +4059,13 @@ def decide(spec_name: str | None, answer: str | None, entry: str | None, overrid
     With SPEC_NAME, shows decisions for that spec.
     With --entry and --answer, resolves a specific decision.
 
-    \\b
+    \b
+    Examples:
+        factory decide                                     # list all pending
+        factory decide my-spec                             # show for one spec
+        factory decide my-spec --entry 7.1 --answer "B"   # resolve entry
+
+    \b
     Exit codes:
       0  Success
       1  Spec not found or entry not found
@@ -4035,7 +4186,7 @@ def decide(spec_name: str | None, answer: str | None, entry: str | None, overrid
         console.print("Next: [bold]factory run spec[/bold]")
 
 
-@main.command()
+@main.command(short_help="Agent blockers and pending human requests")
 @click.option(
     "--resolve",
     "resolve_id",
@@ -4191,7 +4342,7 @@ def needs(resolve_id: str | None, show_all: bool, blockers_only: bool) -> None:
         console.print()
 
 
-@main.command()
+@main.command(short_help="Agent self-examination pass")
 @click.argument("agent_name", required=False, metavar="AGENT")
 def reflect(agent_name: str | None) -> None:
     """Invoke agents with a reflection prompt.
@@ -4327,9 +4478,14 @@ def reflect(agent_name: str | None) -> None:
         sys.exit(2)
 
 
-@main.group()
+@main.group(short_help="Manage verification scenario holdouts")
 def scenario() -> None:
-    """Manage scenario holdout files for verification."""
+    """Manage scenario holdout files for verification.
+
+    Scenarios are structured test cases that the verifier uses to score
+    spec satisfaction.  Each project gets its own directory under
+    scenarios/ with a _template.md and individual scenario files.
+    """
     pass
 
 
@@ -4465,7 +4621,7 @@ def scenario_list() -> None:
     console.print(table)
 
 
-@main.command()
+@main.command(short_help="Manage factory-internal observations")
 @click.argument("filename_or_slug", required=False, metavar="FILENAME_OR_SLUG")
 @click.option("--list", "do_list", is_flag=True, default=False,
               help="List open observations.")
@@ -4690,14 +4846,16 @@ def triage(
     console.print(f"  factory triage {target_file.name} --dismiss --reason \"...\"")
 
 
-@main.command(name="cleanup-factory-internal")
+@main.command(name="cleanup-factory-internal", short_help="Remove promoted/dismissed observations")
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show what would be cleaned without deleting.")
 def cleanup_factory_internal_cmd(dry_run: bool) -> None:
-    """Remove factory-internal files when lifecycle criteria are met.
+    """Remove factory-internal observation files when lifecycle criteria are met.
 
     Removes promoted files whose corresponding inbox spec has been archived,
     and dismissed files older than 30 days.
+
+    Also runs automatically after every agent execution.
     """
     try:
         config = load_config()
