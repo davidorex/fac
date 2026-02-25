@@ -24,10 +24,11 @@ Core principles:
 Specs are archived by Builder *before* implementation begins — Builder moves the spec from `specs/ready/` to `specs/archive/` as the first act of picking up work. This prevents double-processing and maintains clean state.
 
 ### Pipeline Cleanup (Automatic)
-`factory cleanup-specs`, `factory cleanup-tasks`, and `factory cleanup-research` run as post-execution hooks after every agent run:
-- **Spec cleanup**: removes upstream spec copies (inbox/, drafting/) when a downstream stage already holds the same filename
-- **Task cleanup**: removes stale `tasks/review/` files when an exact-name match exists in `tasks/verified/` or `tasks/failed/`
-- **Research cleanup**: removes stale `tasks/research/` requests when an exact-name match exists in `tasks/research-done/`
+Four GC passes run as post-execution hooks after every agent run (`factory run`, `factory advance`, `factory reflect`):
+- **Spec cleanup** (`cleanup-specs`): removes upstream spec copies (inbox/, drafting/) when a downstream stage already holds the same filename
+- **Task cleanup** (`cleanup-tasks`): removes stale `tasks/review/` files when an exact-name match exists in `tasks/verified/` or `tasks/failed/`
+- **Research cleanup** (`cleanup-research`): removes stale `tasks/research/` requests when an exact-name match exists in `tasks/research-done/`
+- **Factory internal cleanup** (`cleanup-factory-internal`): removes promoted factory-internal files whose `promoted_to` spec is archived; removes dismissed files older than 30 days. Standalone: `factory cleanup-factory-internal [--dry-run]`
 
 ### Failure Learning Convention
 Every failure report in `tasks/failed/` MUST include a `## Generalizable Learning` section. The runtime automatically extracts these to `learnings/failures/` after each Verifier run. Absence of this section is logged as a warning but does not block the pipeline.
@@ -42,13 +43,41 @@ Failed tasks can be rebuilt via `factory rebuild {task-name}`. The command:
 `tasks/resolved/` holds failure reports that have been addressed (by rebuild or manual resolution). After a rebuilt task is verified, the old failure report moves to `tasks/resolved/` with a `## Resolution` annotation. `factory resolve {task-name} --reason "..."` handles manual resolution.
 
 ### Human-Action-Needed System
-Agents write to `memory/{agent}/needs.md` when hitting blockers that require human intervention (READ-ONLY file edits, access scope changes, external actions). `factory needs` surfaces all open entries grouped by category. `factory needs --resolve {id}` marks entries resolved. `observation` category entries (non-blocking, from reflection passes) display separately and can be hidden with `--blockers-only`.
+Agents write to `memory/{agent}/needs.md` when hitting blockers that require human intervention (READ-ONLY file edits, access scope changes, external actions). `factory needs` surfaces all open **blocker** entries grouped by category. `factory needs --resolve {id}` marks entries resolved. `--blockers-only` is a backward-compatible no-op (observations no longer appear in `factory needs` at all).
+
+`category: observation` entries are **automatically promoted** by the kernel post-run pass (`promote_needs_observations()`) to `specs/factory-internal/` with `status: promoted`. The kernel also extracts signal phrases from agent prose output (`extract_surfaced_observations()`) into factory-internal. Operators manage observations via `factory triage` (not `factory needs`).
 
 ### Scenario Holdouts
 `scenarios/` is inaccessible to Builder — holdout by design. Project scenarios live in `scenarios/{project}/`. The meta-scenario for factory infrastructure is `scenarios/meta/factory-itself.md`. Verifier evaluates against holdout scenarios independently; meta-scenario evaluation is directional (not pass/fail). Commands: `factory scenario init-meta`, `factory scenario new`, `factory scenario list`.
 
 ### Agent Reflection
 `factory reflect [AGENT]` runs sequential reflection passes across pipeline agents (or a single named agent). Each agent receives its own agents.yaml config block plus the `agent-reflection` skill content, and writes observations to its `memory/{agent}/needs.md`. Observations have `category: observation` and appear separately in `factory needs` output.
+
+### Multi-Backend Dispatch Architecture
+`llm.py` is a dispatcher; backends live in `runtime/factory_runtime/backends/`. `get_backend(provider)` in `backends/__init__.py` returns the correct backend. `validate_providers()` checks binary availability at startup — missing binary produces a warning but does not block other agents.
+
+Current backends:
+- `backends/anthropic.py` — Claude Code CLI, full stream-json event parsing, identical to pre-refactor behavior
+- `backends/kimi.py` — kimi-cli backend, temp file cleanup in `finally` block, no streaming
+
+**Backend `run_agent()` signature:** `(config, agent_config, task_content, message, is_heartbeat, run_logger, system_prompt, user_prompt) → str`
+
+**Invariants:** Context assembly (`assemble_context()`) and ACL injection (`_build_acl_prompt()`) happen in the dispatcher, not in backends. Governance (`run_pre_governance()`, `run_post_governance()`) is backend-agnostic. `provider:` field in `agents.yaml` determines which backend runs an agent. `backends/capabilities.md` documents the capability matrix including accepted gaps (per-tool-call governance for kimi, no streaming).
+
+### Factory Internal Observation Pipeline
+`specs/factory-internal/` holds structured observations promoted from agent needs.md or extracted from prose. Lifecycle: `open` → `promoted` (becomes inbox spec via `factory triage {slug} --promote`) or `dismissed` (`factory triage {slug} --dismiss --reason "..."`).
+
+**File naming:** `{YYYY-MM-DDTHHMM}-{severity}-{slug}.md`. Severity: `critical`, `high`, `low` (keyword heuristics via `_CRITICAL_TERMS` / `_HIGH_TERMS`).
+
+**Kernel auto-promotion:** After every agent run, `promote_needs_observations()` converts `category: observation, status: open` needs.md entries to factory-internal files (`source-type: needs-promotion`). Needs entries updated to `status: promoted` with `promoted_to` field. Separately, `extract_surfaced_observations()` scans agent prose for signal phrases and creates factory-internal entries (`source-type: kernel-extraction`), capped at 3 per run with deduplication.
+
+**Operator commands:**
+- `factory triage --list` — severity-grouped view (critical → high → low), oldest first. `--all` includes promoted/dismissed.
+- `factory triage {slug} --promote` — creates `specs/inbox/{slug}.md` with observation text
+- `factory triage {slug} --dismiss --reason "..."` — requires reason; exit 1 if omitted
+- Slug resolution accepts full filename or substring; ambiguous → lists matches + exit 1
+
+**`factory status`** shows Factory Internal section with severity-grouped counts and slug names when open observations exist; section omitted entirely when empty. Critical items generate `factory triage {file} --promote` hints in next-step display (capped at 2).
 
 ### Decision Gates
 When agents hit ambiguities during spec or build, the decision-heuristic skill classifies them:
