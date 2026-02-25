@@ -456,15 +456,21 @@ def _compute_next_dispatch(
         console.print(f"  Resolve with: factory decide {{NAME}}")
         return None
 
-    # Gate: critical/high factory-internal observations
+    # Gate: only critical observations block the pipeline.
+    # High observations are visible in status and WhatsApp but don't gate.
     fi_items = _list_factory_internal(workspace, include_all=False)
-    critical_high = [i for i in fi_items if i["severity"] in ("critical", "high")]
-    if critical_high:
-        console.print(f"[yellow]Gate:[/yellow] {len(critical_high)} critical/high observations need triage")
-        for item in critical_high[:3]:
-            console.print(f"  {item['severity']:>8}  {item['filename']}")
+    critical = [i for i in fi_items if i["severity"] == "critical"]
+    if critical:
+        console.print(f"[yellow]Gate:[/yellow] {len(critical)} critical observations need triage")
+        for item in critical[:3]:
+            console.print(f"  critical  {item['filename']}")
         console.print(f"  Resolve with: factory triage {{FILE}} --promote or --dismiss")
         return None
+
+    # High observations: warn but don't gate
+    high = [i for i in fi_items if i["severity"] == "high"]
+    if high:
+        console.print(f"[dim]Note: {len(high)} high-severity observations pending triage (not blocking)[/dim]")
 
     # --- DISPATCH TABLE (downstream-first) ---
 
