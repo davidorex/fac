@@ -46,8 +46,10 @@ Before writing, check your own `memory/{agent}/needs.md` for an existing open en
 | `config-edit` | A READ-ONLY config file needs modification |
 | `manual-intervention` | One-time human action outside the codebase |
 | `approval` | Proposed action requires human sign-off before proceeding |
-| `observation` | Non-blocking feedback during a reflection pass — friction, misalignment, or improvement opportunity |
+| `observation` | Non-blocking feedback — kernel automatically promotes to `specs/factory-internal/` for structured triage. |
 
 ## After Writing
 
-Note the needs entry in your daily log. The human runs `factory needs` to see all open entries and `factory needs --resolve {id}` after taking action. Observations appear in a separate section in `factory needs` output and can be hidden with `--blockers-only`.
+Note the needs entry in your daily log. The human runs `factory needs` to see all open blocker entries and `factory needs --resolve {id}` after taking action.
+
+Observations are automatically promoted to `specs/factory-internal/` by the kernel post-run pass and triaged by the operator via `factory triage`. They no longer appear in `factory needs` output — use `factory triage --list` to review them.

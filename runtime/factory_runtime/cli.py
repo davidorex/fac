@@ -176,11 +176,16 @@ def _compute_next_actions(workspace: Path) -> list[str]:
                 if "awaiting-operator" in text:
                     actions.append(f"factory decide {name}")
 
-    # Needs awaiting operator
+    # Needs awaiting operator (observation category excluded — handled via factory triage)
     needs = parse_needs_entries(workspace)
     open_needs = [e for e in needs if e["status"] == "open" and e["category"] != "observation"]
     if open_needs:
         actions.append("factory needs")
+
+    # Factory-internal critical observations need triage
+    fi_items = _list_factory_internal(workspace, include_all=False)
+    for item in [i for i in fi_items if i["severity"] == "critical"][:2]:
+        actions.append(f"factory triage {item['filename']} --promote")
 
     # Pipeline flow: in priority order
     inbox_count, _ = _count_dir(workspace, "specs/inbox")
@@ -369,7 +374,8 @@ def extract_surfaced_observations(
 
     Agents should write observations to needs.md themselves (via the
     human-action-needed skill). This pass catches observations that
-    were only mentioned in response prose and persists them.
+    were only mentioned in response prose and persists them directly
+    to ``specs/factory-internal/`` as structured observation files.
 
     Returns log lines describing any extracted observations.
     """
@@ -405,7 +411,9 @@ def extract_surfaced_observations(
         "could be improved",
     ]
 
-    # Check if the agent already wrote to needs.md during this run
+    # Check if the agent already wrote to needs.md during this run.
+    # If so, those entries will be promoted by promote_needs_observations —
+    # skip the prose extraction to avoid duplicates.
     needs_file = workspace / "memory" / agent / "needs.md"
     needs_mtime_before = needs_file.stat().st_mtime if needs_file.exists() else 0
 
@@ -429,31 +437,43 @@ def extract_surfaced_observations(
     # Check if agent already wrote needs during this run
     needs_mtime_after = needs_file.stat().st_mtime if needs_file.exists() else 0
     if needs_mtime_after > needs_mtime_before:
-        # Agent updated needs.md — assume it handled its own observations
+        # Agent updated needs.md — promote_needs_observations will handle those entries
         return ["[dim]Agent wrote to needs.md during run — skipping kernel extraction[/dim]"]
 
-    # Write extracted observations to needs.md
+    # Write extracted observations directly to specs/factory-internal/
+    fi_dir = workspace / "specs" / "factory-internal"
+    fi_dir.mkdir(parents=True, exist_ok=True)
+
     log: list[str] = []
-    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    now = datetime.now()
+    now_str = now.strftime("%Y-%m-%dT%H:%M:%S")
+    ts_str = now.strftime("%Y-%m-%dT%H%M")
 
-    needs_file.parent.mkdir(parents=True, exist_ok=True)
-    entries: list[str] = []
-    for i, obs in enumerate(observations[:3]):  # cap at 3
-        entry_id = f"{agent}-kernel-obs-{now.replace(':', '')}-{i}"
-        entries.append(
-            f"\n## {entry_id}\n"
+    for obs in observations[:3]:  # cap at 3
+        severity = "low"  # kernel-extracted observations default to low
+        slug = _to_slug(obs[:80])
+        filename = f"{ts_str}-{severity}-{slug}.md"
+
+        # Deduplication check
+        dup = _find_duplicate_factory_internal(fi_dir, obs)
+        if dup:
+            log.append(f"[dim]Deduplication: kernel extraction skipped for: {obs[:60]}...[/dim]")
+            continue
+
+        content = (
+            f"# {slug}\n"
+            f"- severity: {severity}\n"
             f"- status: open\n"
-            f"- created: {now}\n"
-            f"- category: observation\n"
-            f"- blocked: {obs}\n"
-            f"- context: extracted by kernel from agent response (agent did not write to needs.md)\n"
-            f"\n### Exact Change\n"
-            f"Review and address or dismiss: {obs}\n"
+            f"- created: {now_str}\n"
+            f"- source-agent: {agent}\n"
+            f"- source-type: kernel-extraction\n"
+            f"\n## Observation\n{obs}\n"
+            f"\n## Context\n"
+            f"Extracted by kernel from agent response prose "
+            f"(agent did not write to needs.md during this run).\n"
         )
-        log.append(f"Extracted observation: {obs[:80]}...")
-
-    with open(needs_file, "a") as f:
-        f.writelines(entries)
+        (fi_dir / filename).write_text(content)
+        log.append(f"Extracted observation → specs/factory-internal/{filename}")
 
     return log
 
@@ -946,6 +966,21 @@ _CATEGORY_DISPLAY_ORDER: list[tuple[str, str]] = [
     ("approval", "Approvals"),
 ]
 
+# Severity heuristics for factory-internal observation classification.
+# Terms are checked in order: first match wins.
+_CRITICAL_TERMS: list[str] = [
+    "pipeline blocked", "data loss", "governance gap", "security",
+    "breaks", "cannot proceed", "integrity",
+]
+_HIGH_TERMS: list[str] = [
+    "friction", "gap", "missing", "stale", "incorrect",
+    "degrades", "not firing", "accumulate",
+]
+
+_FACTORY_INTERNAL_SEVERITY_ORDER: dict[str, int] = {
+    "critical": 0, "high": 1, "low": 2,
+}
+
 
 def _format_age(created_str: str | None) -> str:
     """Format a created timestamp as a human-readable age string."""
@@ -1082,6 +1117,376 @@ def _snapshot_needs_ids(workspace: Path) -> set[str]:
     return {e["id"] for e in entries}
 
 
+def _to_slug(text: str, max_len: int = 50) -> str:
+    """Convert arbitrary text to a kebab-case slug (max_len chars)."""
+    text = text.lower().strip()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    text = text.strip("-")
+    slug = text[:max_len].rstrip("-")
+    return slug or "observation"
+
+
+def _assign_severity(blocked: str) -> str:
+    """Classify observation severity from *blocked* text via keyword heuristics."""
+    lower = blocked.lower()
+    for term in _CRITICAL_TERMS:
+        if term in lower:
+            return "critical"
+    for term in _HIGH_TERMS:
+        if term in lower:
+            return "high"
+    return "low"
+
+
+def _extract_needs_observation(block: str) -> str:
+    """Extract the observation text from a needs.md entry block.
+
+    Prefers the ``- blocked:`` field.  Falls back to non-field body paragraphs
+    for entries that do not use the canonical format (e.g. reviewer entries
+    with inline body text instead of a ``blocked:`` field).
+    """
+    blocked_m = re.search(r"^- blocked:\s*(.+)$", block, re.MULTILINE)
+    if blocked_m:
+        return blocked_m.group(1).strip()
+
+    # Fallback: collect non-field, non-heading content lines
+    lines = []
+    for line in block.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("## ") or stripped.startswith("### "):
+            continue
+        if re.match(r"^- [\w-]+:", stripped):
+            continue
+        lines.append(stripped)
+    body = " ".join(lines).strip()
+    return body[:300] if body else "(no description)"
+
+
+def _find_duplicate_factory_internal(fi_dir: Path, obs_text: str) -> Path | None:
+    """Return an existing open factory-internal file whose ## Observation matches *obs_text*.
+
+    Uses normalised whitespace comparison of the first 200 characters.
+    Returns None when no duplicate exists or when fi_dir is absent.
+    """
+    if not fi_dir.exists():
+        return None
+    norm = re.sub(r"\s+", " ", obs_text[:200]).strip().lower()
+    for f in sorted(fi_dir.glob("*.md")):
+        if f.name.startswith("."):
+            continue
+        content = f.read_text()
+        status_m = re.search(r"^- status:\s*(\S+)", content, re.MULTILINE)
+        if status_m and status_m.group(1).strip() != "open":
+            continue
+        obs_m = re.search(
+            r"^## Observation\s*\n(.*?)(?=^## |\Z)", content, re.MULTILINE | re.DOTALL
+        )
+        if obs_m:
+            existing_norm = re.sub(r"\s+", " ", obs_m.group(1)[:200]).strip().lower()
+            if existing_norm == norm:
+                return f
+    return None
+
+
+def _parse_factory_internal_file(filepath: Path) -> dict:
+    """Parse a factory-internal observation file into a dict."""
+    content = filepath.read_text()
+
+    def _get(field: str) -> str | None:
+        m = re.search(rf"^- {re.escape(field)}:\s*(.+)$", content, re.MULTILINE)
+        return m.group(1).strip() if m else None
+
+    obs_m = re.search(
+        r"^## Observation\s*\n(.*?)(?=^## |\Z)", content, re.MULTILINE | re.DOTALL
+    )
+    obs_text = obs_m.group(1).strip() if obs_m else ""
+
+    title_m = re.match(r"^# (.+)", content)
+    title = title_m.group(1).strip() if title_m else filepath.stem
+
+    # Extract slug: strip date-severity prefix from filename
+    slug_m = re.match(
+        r"^\d{4}-\d{2}-\d{2}T\d{4}-(critical|high|low)-(.+)$",
+        filepath.stem,
+    )
+    slug = slug_m.group(2) if slug_m else filepath.stem
+
+    return {
+        "filename": filepath.name,
+        "filepath": filepath,
+        "slug": slug,
+        "title": title,
+        "severity": _get("severity") or "low",
+        "status": _get("status") or "open",
+        "created": _get("created"),
+        "source_agent": _get("source-agent") or "unknown",
+        "source_type": _get("source-type") or "unknown",
+        "promoted_to": _get("promoted_to"),
+        "promoted_at": _get("promoted_at"),
+        "dismissed_reason": _get("dismissed_reason"),
+        "dismissed_at": _get("dismissed_at"),
+        "observation": obs_text,
+    }
+
+
+def _list_factory_internal(
+    workspace: Path, include_all: bool = False
+) -> list[dict]:
+    """Return factory-internal observation files sorted by severity then age.
+
+    When *include_all* is False (default), only ``open`` files are returned.
+    """
+    fi_dir = workspace / "specs" / "factory-internal"
+    if not fi_dir.exists():
+        return []
+    items = []
+    for f in fi_dir.glob("*.md"):
+        if f.name.startswith("."):
+            continue
+        item = _parse_factory_internal_file(f)
+        if not include_all and item["status"] != "open":
+            continue
+        items.append(item)
+    items.sort(key=lambda x: (
+        _FACTORY_INTERNAL_SEVERITY_ORDER.get(x["severity"], 99),
+        x["created"] or "",
+    ))
+    return items
+
+
+def _resolve_factory_internal(
+    fi_dir: Path, filename_or_slug: str
+) -> tuple[list[Path], str]:
+    """Resolve a filename or slug to matching factory-internal files.
+
+    Returns ``(matches, error_message)``.  On success *error_message* is empty.
+    On failure *matches* is empty.
+    """
+    if not fi_dir.exists():
+        return [], "specs/factory-internal/ does not exist"
+
+    # Try exact filename match
+    candidate = fi_dir / filename_or_slug
+    if not filename_or_slug.endswith(".md"):
+        candidate = fi_dir / (filename_or_slug + ".md")
+    if candidate.exists():
+        return [candidate], ""
+
+    # Slug substring match against all files
+    matches = [
+        f for f in sorted(fi_dir.glob("*.md"))
+        if not f.name.startswith(".") and filename_or_slug in f.name
+    ]
+    if not matches:
+        return [], f"No factory-internal file found matching: {filename_or_slug}"
+    return matches, ""
+
+
+def promote_needs_observations(workspace: Path, agent: str) -> list[str]:
+    """Promote ``category: observation`` entries from ``memory/{agent}/needs.md``.
+
+    For each open observation entry, creates a structured file in
+    ``specs/factory-internal/`` and updates the needs.md entry to
+    ``status: promoted`` with a ``promoted_to`` field.
+
+    Returns a list of log lines.
+    """
+    needs_file = workspace / "memory" / agent / "needs.md"
+    if not needs_file.exists():
+        return []
+
+    fi_dir = workspace / "specs" / "factory-internal"
+    fi_dir.mkdir(parents=True, exist_ok=True)
+
+    text = needs_file.read_text()
+    blocks = re.split(r"^(?=## )", text, flags=re.MULTILINE)
+
+    log: list[str] = []
+    now = datetime.now()
+    now_str = now.strftime("%Y-%m-%dT%H:%M:%S")
+    ts_str = now.strftime("%Y-%m-%dT%H%M")
+    updates: list[tuple[str, str]] = []  # (old_block, new_block)
+
+    for block in blocks:
+        block_stripped = block.strip()
+        if not block_stripped:
+            continue
+        heading_m = re.match(r"^## (.+)", block_stripped)
+        if not heading_m:
+            continue
+
+        status_m = re.search(r"^- status:\s*(\S+)", block_stripped, re.MULTILINE)
+        cat_m = re.search(r"^- category:\s*(\S+)", block_stripped, re.MULTILINE)
+
+        if not status_m or status_m.group(1).strip() != "open":
+            continue
+        if not cat_m or cat_m.group(1).strip() != "observation":
+            continue
+
+        entry_id = heading_m.group(1).strip()
+
+        # Get created/filed timestamp
+        created_m = re.search(
+            r"^- (?:created|filed):\s*(.+)$", block_stripped, re.MULTILINE
+        )
+        created = created_m.group(1).strip() if created_m else now_str
+
+        # Extract observation text
+        obs_text = _extract_needs_observation(block_stripped)
+
+        # Assign severity
+        severity = _assign_severity(obs_text)
+
+        # Generate filename
+        slug = _to_slug(obs_text[:80])
+        filename = f"{ts_str}-{severity}-{slug}.md"
+        fi_path = fi_dir / filename
+
+        # Deduplication: if matching open file exists, point promoted_to there
+        dup = _find_duplicate_factory_internal(fi_dir, obs_text)
+        if dup:
+            promoted_to = f"specs/factory-internal/{dup.name}"
+            log.append(
+                f"[dim]Deduplication: {entry_id} matches {dup.name} — skipped creation[/dim]"
+            )
+        else:
+            # Create factory-internal file
+            ctx_file = workspace / "memory" / agent / "needs.md"
+            content = (
+                f"# {slug}\n"
+                f"- severity: {severity}\n"
+                f"- status: open\n"
+                f"- created: {created}\n"
+                f"- source-agent: {agent}\n"
+                f"- source-type: needs-promotion\n"
+                f"\n## Observation\n{obs_text}\n"
+                f"\n## Context\n"
+                f"Promoted from needs.md entry: {entry_id}. "
+                f"Agent: {agent}. Source file: {ctx_file.relative_to(workspace)}.\n"
+            )
+            fi_path.write_text(content)
+            promoted_to = f"specs/factory-internal/{filename}"
+            log.append(
+                f"Promoted observation: {entry_id} → {promoted_to}"
+            )
+
+        # Schedule needs.md update: mark as promoted
+        old_block = block  # preserve original (may include leading whitespace from split)
+        new_block = re.sub(
+            r"(^- status:\s*)open",
+            rf"\g<1>promoted\n- promoted_to: {promoted_to}",
+            old_block,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        updates.append((old_block, new_block))
+
+    # Apply needs.md updates
+    if updates:
+        new_text = text
+        for old, new in updates:
+            new_text = new_text.replace(old, new, 1)
+        needs_file.write_text(new_text)
+
+    return log
+
+
+def run_factory_internal_migration(workspace: Path) -> list[str]:
+    """One-time migration: promote all open observation entries from all agents.
+
+    Creates a ``.migrated`` sentinel in ``specs/factory-internal/`` after
+    running so the migration does not repeat on subsequent invocations.
+    Idempotent — entries already marked ``status: promoted`` are skipped
+    because ``promote_needs_observations`` only acts on ``status: open`` entries.
+
+    Returns log lines.
+    """
+    fi_dir = workspace / "specs" / "factory-internal"
+    migrated_marker = fi_dir / ".migrated"
+
+    if migrated_marker.exists():
+        return []
+
+    fi_dir.mkdir(parents=True, exist_ok=True)
+    log: list[str] = ["[dim]Running one-time factory-internal migration…[/dim]"]
+
+    memory_dir = workspace / "memory"
+    if memory_dir.exists():
+        for needs_file in sorted(memory_dir.glob("*/needs.md")):
+            agent_name = needs_file.parent.name
+            agent_log = promote_needs_observations(workspace, agent_name)
+            log.extend(agent_log)
+
+    migrated_marker.write_bytes(b"")
+    log.append("[dim]Migration complete — marker written.[/dim]")
+    return log
+
+
+def cleanup_factory_internal(
+    workspace: Path, dry_run: bool = False
+) -> list[str]:
+    """GC pass: remove factory-internal files when lifecycle criteria are met.
+
+    Removes:
+    - ``promoted`` files whose ``promoted_to`` spec exists in ``specs/archive/``
+    - ``dismissed`` files whose ``dismissed_at`` is more than 30 days ago
+
+    Returns log lines.
+    """
+    fi_dir = workspace / "specs" / "factory-internal"
+    if not fi_dir.exists():
+        return []
+
+    archive_dir = workspace / "specs" / "archive"
+    archive_names: set[str] = (
+        {f.name for f in archive_dir.glob("*.md")}
+        if archive_dir.exists()
+        else set()
+    )
+
+    log: list[str] = []
+    now = datetime.now()
+
+    for f in sorted(fi_dir.glob("*.md")):
+        if f.name.startswith("."):
+            continue
+        content = f.read_text()
+        status_m = re.search(r"^- status:\s*(\S+)", content, re.MULTILINE)
+        status = status_m.group(1).strip() if status_m else "open"
+
+        if status == "promoted":
+            pt_m = re.search(r"^- promoted_to:\s*(.+)$", content, re.MULTILINE)
+            if pt_m:
+                promoted_to_path = Path(pt_m.group(1).strip())
+                inbox_name = promoted_to_path.name
+                if inbox_name in archive_names:
+                    log.append(
+                        f"Cleaned factory-internal: {f.name}"
+                        f" (promoted spec archived)"
+                    )
+                    if not dry_run:
+                        f.unlink()
+
+        elif status == "dismissed":
+            da_m = re.search(r"^- dismissed_at:\s*(.+)$", content, re.MULTILINE)
+            if da_m:
+                try:
+                    dismissed_at = datetime.fromisoformat(da_m.group(1).strip())
+                    if (now - dismissed_at).days >= 30:
+                        log.append(
+                            f"Cleaned factory-internal: {f.name}"
+                            f" (dismissed 30+ days ago)"
+                        )
+                        if not dry_run:
+                            f.unlink()
+                except (ValueError, TypeError):
+                    pass
+
+    return log
+
+
 def _agent_yaml_block(workspace: Path, agent_name: str) -> str:
     """Return the agents.yaml YAML block for *agent_name* as a plain-text string.
 
@@ -1209,6 +1614,7 @@ def init(workspace: str | None) -> None:
 
     dirs = [
         "specs/inbox", "specs/drafting", "specs/ready", "specs/archive",
+        "specs/factory-internal",
         "tasks/research", "tasks/research-done", "tasks/building",
         "tasks/review", "tasks/verified", "tasks/failed", "tasks/decisions",
         "tasks/resolved", "tasks/maintenance",
@@ -1391,6 +1797,21 @@ def advance(spec_name: str) -> None:
         for line in obs_log:
             console.print(f"  [yellow]{line}[/yellow]")
 
+        # Promote needs.md observation entries to factory-internal
+        promo_log = promote_needs_observations(config.workspace, agent)
+        for line in promo_log:
+            console.print(f"  [dim]{line}[/dim]")
+
+        # Factory-internal GC pass
+        fi_gc_log = cleanup_factory_internal(config.workspace)
+        for line in fi_gc_log:
+            console.print(f"  [dim]{line}[/dim]")
+
+        # One-time migration (idempotent after first run)
+        mig_log = run_factory_internal_migration(config.workspace)
+        for line in mig_log:
+            console.print(f"  {line}")
+
         # WhatsApp notification
         if result.strip().upper() != "NO_REPLY":
             summary = result.strip()
@@ -1543,6 +1964,21 @@ def run(agent: str, spec_name: str | None, task: str | None, message: str | None
         for line in obs_log:
             console.print(f"  [yellow]{line}[/yellow]")
 
+        # Post-execution: promote needs.md observation entries to factory-internal
+        promo_log = promote_needs_observations(config.workspace, agent)
+        for line in promo_log:
+            console.print(f"  [dim]{line}[/dim]")
+
+        # Post-execution: factory-internal GC pass
+        fi_gc_log = cleanup_factory_internal(config.workspace)
+        for line in fi_gc_log:
+            console.print(f"  [dim]{line}[/dim]")
+
+        # Post-execution: one-time migration (idempotent after first run)
+        mig_log = run_factory_internal_migration(config.workspace)
+        for line in mig_log:
+            console.print(f"  {line}")
+
         # Post-execution: WhatsApp notification (skip NO_REPLY heartbeats)
         if result.strip().upper() != "NO_REPLY":
             # Build a concise summary from the agent response
@@ -1611,7 +2047,6 @@ def status() -> None:
     dec_count, _ = _count_dir(workspace, "tasks/decisions")
     needs_entries = parse_needs_entries(workspace)
     open_needs = [e for e in needs_entries if e["status"] == "open" and e["category"] != "observation"]
-    open_observations = [e for e in needs_entries if e["status"] == "open" and e["category"] == "observation"]
 
     status_notes: list[str] = []
     if dec_count > 0:
@@ -1628,8 +2063,6 @@ def status() -> None:
             status_notes.append(f"[dim]{auto_count} auto-resolved[/dim]")
     if open_needs:
         status_notes.append(f"[yellow]{len(open_needs)} need(s) pending[/yellow]")
-    if open_observations:
-        status_notes.append(f"[dim]{len(open_observations)} observation(s)[/dim]")
 
     if not pipeline_lines and not status_notes:
         pipeline_block = "  [dim]Pipeline empty.[/dim]"
@@ -1640,6 +2073,30 @@ def status() -> None:
         if status_notes:
             parts.append("  " + "  ".join(status_notes))
         pipeline_block = "\n".join(parts)
+
+    # ── Factory Internal ──
+    fi_items = _list_factory_internal(workspace, include_all=False)
+    fi_block = ""
+    if fi_items:
+        by_sev: dict[str, list[dict]] = {"critical": [], "high": [], "low": []}
+        for item in fi_items:
+            by_sev.setdefault(item["severity"], []).append(item)
+        fi_lines: list[str] = [
+            f"\n[bold]Factory Internal[/bold] ({len(fi_items)} open):"
+        ]
+        for sev in ("critical", "high", "low"):
+            sev_items = by_sev.get(sev, [])
+            if not sev_items:
+                continue
+            slugs = ", ".join(i["slug"] for i in sev_items[:3])
+            if len(sev_items) > 3:
+                slugs += f" (+{len(sev_items) - 3})"
+            color = "red" if sev == "critical" else "yellow" if sev == "high" else "dim"
+            fi_lines.append(
+                f"  [yellow]▸[/yellow] [{color}]{sev:<8}[/{color}]"
+                f"  {len(sev_items)}   {slugs}"
+            )
+        fi_block = "\n".join(fi_lines)
 
     # ── Next actions ──
     actions = _compute_next_actions(workspace)
@@ -1661,11 +2118,17 @@ def status() -> None:
         f"{agent_block}\n"
         f"{project_line}"
         f"\n[bold]Pipeline[/bold]\n"
-        f"{pipeline_block}\n"
+        f"{pipeline_block}"
+        f"{fi_block}\n"
         f"\n[bold]Next[/bold]\n"
         f"{next_block}"
     )
     console.print(Panel(output, title="[bold]Factory[/bold]", border_style="dim"))
+
+    # Run one-time migration on factory status invocation
+    mig_log = run_factory_internal_migration(workspace)
+    for line in mig_log:
+        console.print(f"  {line}")
 
 
 @main.command()
@@ -2377,6 +2840,10 @@ def needs(resolve_id: str | None, show_all: bool, blockers_only: bool) -> None:
     Reads memory/*/needs.md and displays open items grouped by category,
     sorted oldest-first within each category.
 
+    Note: ``--blockers-only`` is retained for backward compatibility.
+    Observation entries are now handled via ``factory triage`` and are
+    excluded from this command regardless of flags.
+
     \b
     Exit codes:
       0  Success (including "nothing to show" and successful resolve)
@@ -2389,6 +2856,7 @@ def needs(resolve_id: str | None, show_all: bool, blockers_only: bool) -> None:
         sys.exit(1)
 
     workspace = config.workspace
+    _ = blockers_only  # retained for backward compat; observations excluded regardless
 
     # --resolve path: locate and resolve a single entry, then commit
     if resolve_id is not None:
@@ -2421,6 +2889,10 @@ def needs(resolve_id: str | None, show_all: bool, blockers_only: bool) -> None:
     # Display path
     all_entries = parse_needs_entries(workspace)
 
+    # Observations are now handled via `factory triage` (specs/factory-internal/).
+    # Exclude them from needs display entirely.
+    all_entries = [e for e in all_entries if e["category"] != "observation"]
+
     # Warn about duplicate IDs (violates uniqueness invariant)
     seen_ids: dict[str, int] = {}
     for entry in all_entries:
@@ -2441,6 +2913,7 @@ def needs(resolve_id: str | None, show_all: bool, blockers_only: bool) -> None:
 
     if not display_entries:
         console.print("Factory needs nothing — all clear.")
+        console.print("[dim]  (observations are in factory triage — run `factory triage --list`)[/dim]")
         return
 
     # Group by category
@@ -2473,15 +2946,11 @@ def needs(resolve_id: str | None, show_all: bool, blockers_only: bool) -> None:
         )
         console.print(f"    {blocked}")
 
-    # Separate observation entries from blocker entries.
-    # Observations go in their own section at the bottom; --blockers-only suppresses them.
-    _OBSERVATION_CATEGORY = "observation"
-    observation_entries = categories.get(_OBSERVATION_CATEGORY, [])
-    observation_entries.sort(key=lambda e: e["created"] or "9999")
-
     # Blocker display: known categories in canonical order, then unknown extras
+    # --blockers-only is retained for backward compatibility (observations are
+    # already excluded, so the flag is now a no-op for observation filtering).
     known_blocker_keys = [k for k, _ in _CATEGORY_DISPLAY_ORDER]
-    extra_keys = [k for k in categories if k not in known_blocker_keys and k != _OBSERVATION_CATEGORY]
+    extra_keys = [k for k in categories if k not in known_blocker_keys]
     ordered_blocker_keys = known_blocker_keys + extra_keys
 
     for cat_key in ordered_blocker_keys:
@@ -2494,13 +2963,6 @@ def needs(resolve_id: str | None, show_all: bool, blockers_only: bool) -> None:
         )
         console.print(f"[bold]{display_name}[/bold] ({len(cat_entries)}):")
         for entry in cat_entries:
-            _print_entry(entry)
-        console.print()
-
-    # Observations section — separate display, suppressed by --blockers-only
-    if not blockers_only and observation_entries:
-        console.print(f"[bold]Observations[/bold] ({len(observation_entries)}):")
-        for entry in observation_entries:
             _print_entry(entry)
         console.print()
 
@@ -2599,6 +3061,12 @@ def reflect(agent_name: str | None) -> None:
             else:
                 console.print(f"  [dim]Agent completed.[/dim]")
             n_ran += 1
+
+            # Promote any observation entries this agent wrote during reflection
+            promo_log = promote_needs_observations(workspace, name)
+            for line in promo_log:
+                console.print(f"  [dim]{line}[/dim]")
+
         except Exception as e:
             console.print(f"  [red]Failed:[/red] {e}")
             failed.append(name)
@@ -2606,6 +3074,10 @@ def reflect(agent_name: str | None) -> None:
     # Snapshot needs entry IDs after the reflection pass and compute delta
     post_ids = _snapshot_needs_ids(workspace)
     new_count = len(post_ids - pre_ids)
+
+    # Count promoted factory-internal items created during this pass
+    fi_items = _list_factory_internal(workspace, include_all=False)
+    fi_open_count = len(fi_items)
 
     # Summary output
     total = n_ran + len(failed)
@@ -2623,8 +3095,8 @@ def reflect(agent_name: str | None) -> None:
             f"{new_count} new observations written."
         )
 
-    if new_count > 0:
-        console.print("\nRun `factory needs` to review.")
+    if fi_open_count > 0:
+        console.print(f"\n[dim]{fi_open_count} open observation(s) in factory triage — run `factory triage --list`[/dim]")
 
     # Exit code 2 if every invoked agent failed
     if failed and n_ran == 0:
@@ -2767,6 +3239,258 @@ def scenario_list() -> None:
         table.add_row(display_name, str(count), satisfaction)
 
     console.print(table)
+
+
+@main.command()
+@click.argument("filename_or_slug", required=False, metavar="FILENAME_OR_SLUG")
+@click.option("--list", "do_list", is_flag=True, default=False,
+              help="List open observations.")
+@click.option("--all", "show_all", is_flag=True, default=False,
+              help="Include promoted and dismissed entries (with --list).")
+@click.option("--promote", "do_promote", is_flag=True, default=False,
+              help="Move observation to specs/inbox/ for pipeline processing.")
+@click.option("--dismiss", "do_dismiss", is_flag=True, default=False,
+              help="Mark observation as dismissed (requires --reason).")
+@click.option("--reason", default=None,
+              help="Reason for dismissal (required with --dismiss).")
+def triage(
+    filename_or_slug: str | None,
+    do_list: bool,
+    show_all: bool,
+    do_promote: bool,
+    do_dismiss: bool,
+    reason: str | None,
+) -> None:
+    """Manage factory-internal observations.
+
+    \b
+    Usage:
+      factory triage --list [--all]
+      factory triage FILENAME_OR_SLUG --promote
+      factory triage FILENAME_OR_SLUG --dismiss --reason "..."
+      factory triage FILENAME_OR_SLUG
+
+    FILENAME_OR_SLUG may be the full filename (e.g. 2026-02-25T0817-low-my-obs.md)
+    or just the slug portion (e.g. my-obs).  If the slug matches multiple files,
+    the command lists all matches and exits with code 1.
+
+    \b
+    Exit codes:
+      0  Success
+      1  Slug matches multiple files, file not found, or --dismiss without --reason
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    workspace = config.workspace
+    fi_dir = workspace / "specs" / "factory-internal"
+
+    # ── List mode ──
+    if do_list or (not filename_or_slug and not do_promote and not do_dismiss):
+        items = _list_factory_internal(workspace, include_all=show_all)
+        if not items:
+            if show_all:
+                console.print("[dim]No factory-internal observations.[/dim]")
+            else:
+                console.print("[dim]No open factory-internal observations.[/dim]")
+                console.print("[dim]  Use --all to include promoted and dismissed.[/dim]")
+            return
+
+        scope = "all" if show_all else "open"
+        console.print(f"\n[bold]Factory Internal[/bold] ({len(items)} {scope}):\n")
+        for item in items:
+            age = _format_age(item["created"])
+            sev = item["severity"]
+            color = "red" if sev == "critical" else "yellow" if sev == "high" else "dim"
+            status_tag = (
+                "" if item["status"] == "open"
+                else f"  [dim][{item['status']}][/dim]"
+            )
+            first_line = item["observation"].split("\n")[0][:80]
+            console.print(
+                f"  [{color}]{sev:<8}[/{color}]  "
+                f"[bold]{item['filename']}[/bold]{status_tag}"
+            )
+            console.print(f"    [dim]{item['source_agent']}, {age}[/dim]  {first_line}")
+        console.print()
+        return
+
+    # ── File-targeted modes: require filename_or_slug ──
+    if not filename_or_slug:
+        console.print("[red]Error:[/red] FILENAME_OR_SLUG is required for --promote and --dismiss.")
+        sys.exit(1)
+
+    matches, err = _resolve_factory_internal(fi_dir, filename_or_slug)
+    if err:
+        console.print(f"[red]Error:[/red] {err}")
+        sys.exit(1)
+    if len(matches) > 1:
+        console.print(
+            f"[red]Error:[/red] Slug '{filename_or_slug}' matches multiple files:"
+        )
+        for m in matches:
+            console.print(f"  {m.name}")
+        sys.exit(1)
+
+    target_file = matches[0]
+    item = _parse_factory_internal_file(target_file)
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    # ── Dismiss mode ──
+    if do_dismiss:
+        if not reason:
+            console.print("[red]Error:[/red] --dismiss requires --reason.")
+            sys.exit(1)
+
+        content = target_file.read_text()
+        # Update status and add dismissed metadata after the status line
+        content = re.sub(
+            r"^(- status:\s*)\S+",
+            r"\g<1>dismissed",
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        # Append dismissed metadata before ## Observation
+        obs_pos = content.find("\n## Observation")
+        dismissed_block = (
+            f"\n- dismissed_reason: {reason}"
+            f"\n- dismissed_at: {now}"
+        )
+        if obs_pos >= 0:
+            content = content[:obs_pos] + dismissed_block + content[obs_pos:]
+        else:
+            content = content.rstrip() + dismissed_block + "\n"
+
+        target_file.write_text(content)
+        console.print(f"[green]Dismissed:[/green] {target_file.name}")
+        console.print(f"  Reason: {reason}")
+
+        subprocess.run(["git", "add", "specs/factory-internal/"], cwd=workspace, capture_output=True)
+        result = subprocess.run(
+            ["git", "commit", "-m",
+             f"Dismiss factory-internal observation: {target_file.name}\n\n"
+             f"Reason: {reason}"],
+            cwd=workspace, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            console.print("  [dim]State committed to git.[/dim]")
+        else:
+            console.print(f"  [yellow]Warning:[/yellow] git commit failed: {result.stderr.strip()}")
+        return
+
+    # ── Promote mode ──
+    if do_promote:
+        inbox_dir = workspace / "specs" / "inbox"
+        inbox_dir.mkdir(parents=True, exist_ok=True)
+
+        slug = item["slug"]
+        inbox_file = inbox_dir / f"{slug}.md"
+
+        # Write raw intent to specs/inbox/
+        obs_text = item["observation"]
+        intent_content = (
+            f"# {slug}\n\n"
+            f"{obs_text}\n\n"
+            f"## Source\n"
+            f"Promoted from factory-internal observation: {target_file.name}\n"
+            f"Source agent: {item['source_agent']}\n"
+            f"Original severity: {item['severity']}\n"
+        )
+        inbox_file.write_text(intent_content)
+
+        # Update factory-internal file: status → promoted
+        content = target_file.read_text()
+        content = re.sub(
+            r"^(- status:\s*)\S+",
+            r"\g<1>promoted",
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        promoted_block = (
+            f"\n- promoted_to: specs/inbox/{slug}.md"
+            f"\n- promoted_at: {now}"
+        )
+        obs_pos = content.find("\n## Observation")
+        if obs_pos >= 0:
+            content = content[:obs_pos] + promoted_block + content[obs_pos:]
+        else:
+            content = content.rstrip() + promoted_block + "\n"
+        target_file.write_text(content)
+
+        console.print(f"[green]Promoted:[/green] {target_file.name}")
+        console.print(f"  Intent written: specs/inbox/{slug}.md")
+
+        subprocess.run(
+            ["git", "add", "specs/factory-internal/", "specs/inbox/"],
+            cwd=workspace, capture_output=True,
+        )
+        result = subprocess.run(
+            ["git", "commit", "-m",
+             f"Promote factory-internal observation to pipeline: {slug}\n\n"
+             f"Source: specs/factory-internal/{target_file.name}\n"
+             f"Destination: specs/inbox/{slug}.md\n"
+             f"Severity was: {item['severity']}. "
+             f"Intent enters spec pipeline for full NLSpec drafting."],
+            cwd=workspace, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            console.print("  [dim]State committed to git.[/dim]")
+        else:
+            console.print(f"  [yellow]Warning:[/yellow] git commit failed: {result.stderr.strip()}")
+        return
+
+    # ── Display mode (no action flag) ──
+    sev = item["severity"]
+    status = item["status"]
+    color = "red" if sev == "critical" else "yellow" if sev == "high" else "dim"
+    age = _format_age(item["created"])
+
+    console.print(f"\n[bold]{target_file.name}[/bold]")
+    console.print(f"  severity:  [{color}]{sev}[/{color}]")
+    console.print(f"  status:    {status}")
+    console.print(f"  agent:     {item['source_agent']}")
+    console.print(f"  type:      {item['source_type']}")
+    console.print(f"  age:       {age}")
+    console.print()
+    console.print("[bold]Observation:[/bold]")
+    for line in item["observation"].splitlines():
+        console.print(f"  {line}")
+    console.print()
+    console.print("[bold]Available actions:[/bold]")
+    console.print(f"  factory triage {target_file.name} --promote")
+    console.print(f"  factory triage {target_file.name} --dismiss --reason \"...\"")
+
+
+@main.command(name="cleanup-factory-internal")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show what would be cleaned without deleting.")
+def cleanup_factory_internal_cmd(dry_run: bool) -> None:
+    """Remove factory-internal files when lifecycle criteria are met.
+
+    Removes promoted files whose corresponding inbox spec has been archived,
+    and dismissed files older than 30 days.
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    log_lines = cleanup_factory_internal(config.workspace, dry_run=dry_run)
+
+    if not log_lines:
+        console.print("[dim]Factory internal is clean — no files to remove.[/dim]")
+        return
+
+    prefix = "[dry-run] Would clean" if dry_run else "Cleaned"
+    for line in log_lines:
+        display = line.replace("Cleaned factory-internal:", f"{prefix}:")
+        console.print(f"  {display}")
 
 
 if __name__ == "__main__":
