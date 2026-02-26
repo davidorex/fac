@@ -277,6 +277,8 @@ def _run_post_execution_passes(
         log.append(f"[dim]{line}[/dim]")
     for line in run_research_cleanup(workspace):
         log.append(f"[dim]{line}[/dim]")
+    for line in run_planning_cleanup(workspace):
+        log.append(f"[dim]{line}[/dim]")
     for line in run_decision_cleanup(workspace):
         log.append(f"[dim]{line}[/dim]")
     for line in run_research_done_cleanup(workspace):
@@ -703,6 +705,52 @@ def run_research_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
             log_lines.append(log_line)
             if not dry_run:
                 request_file.unlink()
+
+    return log_lines
+
+
+def run_planning_cleanup(workspace: Path, dry_run: bool = False) -> list[str]:
+    """Remove stale planning directories whose specs have left the active pipeline.
+
+    A tasks/planning/{name}/ directory is stale when no corresponding file
+    exists in specs/ready/, tasks/building/, tasks/review/, or tasks/verified/.
+    This means the spec lifecycle completed (archived) or was abandoned, and the
+    plan artifact is no longer needed.
+
+    Returns a list of log lines describing every deletion (or planned deletion
+    when dry_run=True).
+    """
+    planning_dir = workspace / "tasks" / "planning"
+    if not planning_dir.exists():
+        return []
+
+    # Collect names that are still active in the pipeline
+    active_names: set[str] = set()
+    for subdir in ["specs/ready", "tasks/building", "tasks/review", "tasks/verified"]:
+        d = workspace / subdir
+        if d.exists():
+            for f in d.iterdir():
+                if f.suffix == ".md":
+                    active_names.add(f.stem)
+
+    log_lines: list[str] = []
+
+    for entry in sorted(planning_dir.iterdir()):
+        if entry.name == ".gitkeep":
+            continue
+        plan_name = entry.stem if entry.is_file() else entry.name
+        if plan_name not in active_names:
+            log_line = (
+                f"Cleaned stale plan: tasks/planning/{entry.name}"
+                f" (spec no longer active in pipeline)"
+            )
+            log_lines.append(log_line)
+            if not dry_run:
+                if entry.is_dir():
+                    import shutil
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
 
     return log_lines
 
@@ -2551,6 +2599,7 @@ def main(ctx: click.Context) -> None:
       cleanup-specs             Spec pipeline staleness
       cleanup-tasks             tasks/review/ staleness
       cleanup-research          tasks/research/ staleness
+      cleanup-planning          tasks/planning/ staleness
       cleanup-factory-internal  Observation lifecycle
     """
     ctx.ensure_object(dict)
@@ -3176,6 +3225,13 @@ def start(max_steps: int) -> None:
                 if vf.exists():
                     vf.unlink()
                     git_files.append(str(vf.relative_to(workspace)))
+            # Also clean the consumed planning directory for this spec
+            plan_dir = workspace / "tasks" / "planning" / spec_name_d
+            if plan_dir.exists() and plan_dir.is_dir():
+                import shutil
+                shutil.rmtree(plan_dir)
+                git_files.append(str(plan_dir.relative_to(workspace)))
+                console.print(f"  [dim]Cleared tasks/planning/{spec_name_d} (lifecycle complete)[/dim]")
             if git_files:
                 subprocess.run(
                     ["git", "add"] + git_files,
@@ -3309,6 +3365,8 @@ def advance(spec_name: str) -> None:
             console.print(f"  [dim]{line}[/dim]")
         for line in run_research_cleanup(config.workspace):
             console.print(f"  [dim]{line}[/dim]")
+        for line in run_planning_cleanup(config.workspace):
+            console.print(f"  [dim]{line}[/dim]")
         decision_log = run_decision_monitor(config.workspace, agent)
         for line in decision_log:
             if "hard gate" in line:
@@ -3366,7 +3424,7 @@ def run(agent: str, spec_name: str | None, task: str | None, message: str | None
 
     \b
     Post-execution passes run automatically:
-      - 5 GC passes (specs, tasks, research, decisions, research-done)
+      - 6 GC passes (specs, tasks, research, planning, decisions, research-done)
       - Decision monitor (detects ambiguity, writes gates)
       - Observation extraction and promotion
       - Kernel sudo (processes config-edit requests)
@@ -3476,6 +3534,11 @@ def run(agent: str, spec_name: str | None, task: str | None, message: str | None
         # Post-execution: research request cleanup (runs after every agent)
         research_cleanup_log = run_research_cleanup(config.workspace)
         for line in research_cleanup_log:
+            console.print(f"  [dim]{line}[/dim]")
+
+        # Post-execution: planning directory cleanup (runs after every agent)
+        planning_cleanup_log = run_planning_cleanup(config.workspace)
+        for line in planning_cleanup_log:
             console.print(f"  [dim]{line}[/dim]")
 
         # Post-execution: decision monitor (spec and builder agents)
@@ -4036,6 +4099,36 @@ def cleanup_research_cmd(dry_run: bool) -> None:
     prefix = "[dry-run] Would clean" if dry_run else "Cleaned"
     for line in log_lines:
         display = line.replace("Cleaned stale research request:", f"{prefix}:")
+        console.print(f"  {display}")
+
+
+@main.command(name="cleanup-planning", short_help="Remove stale planning dirs (lifecycle complete)")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be cleaned without deleting.")
+def cleanup_planning_cmd(dry_run: bool) -> None:
+    """Remove stale planning directories whose spec lifecycles have completed.
+
+    A tasks/planning/{name}/ directory is stale when no corresponding file
+    exists in specs/ready/, tasks/building/, tasks/review/, or tasks/verified/.
+    This means the spec was archived or abandoned and the plan artifact is
+    no longer needed.
+
+    Also runs automatically after every agent execution.
+    """
+    try:
+        config = load_config()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    log_lines = run_planning_cleanup(config.workspace, dry_run=dry_run)
+
+    if not log_lines:
+        console.print("[dim]Planning pipeline is clean — no stale plans found.[/dim]")
+        return
+
+    prefix = "[dry-run] Would clean" if dry_run else "Cleaned"
+    for line in log_lines:
+        display = line.replace("Cleaned stale plan:", f"{prefix}:")
         console.print(f"  {display}")
 
 
@@ -5149,7 +5242,7 @@ _CMD_CATEGORIES: dict[str, list[str]] = {
     "configure": ["init", "init-project", "backend", "scenario", "update-claude-skill"],
     "gc": [
         "cleanup-specs", "cleanup-tasks", "cleanup-research",
-        "cleanup-factory-internal",
+        "cleanup-planning", "cleanup-factory-internal",
     ],
 }
 

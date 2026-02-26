@@ -73,7 +73,7 @@ Usage: factory run [OPTIONS] AGENT [SPEC_NAME]
   a directed message.
 
   Post-execution passes run automatically:
-    - 5 GC passes (specs, tasks, research, decisions, research-done)
+    - 6 GC passes (specs, tasks, research, planning, decisions, research-done)
     - Decision monitor (detects ambiguity, writes gates)
     - Observation extraction and promotion
     - Kernel sudo (processes config-edit requests)
@@ -205,6 +205,26 @@ Usage: factory resolve [OPTIONS] TASK_NAME
 Options:
   --reason TEXT  How the failure was resolved.  [required]
   --help         Show this message and exit.
+```
+</command>
+
+<command name="factory fire-drill" short="Validate failure workflow with synthetic data">
+```
+Usage: factory fire-drill [OPTIONS]
+
+  Exercise the failure workflow functions with synthetic data.
+
+  Creates a synthetic failure report, runs extract_failure_learnings(),
+  rebuild_task(), and resolve_completed_failures() in sequence, verifies each
+  produces correct output, then cleans up all synthetic artifacts.
+
+  Exit codes:
+    0  All steps passed (PASS)
+    1  A step failed, or stale artifacts detected without --force
+
+Options:
+  --force  Remove stale fire-drill-canary artifacts before running.
+  --help   Show this message and exit.
 ```
 </command>
 
@@ -562,6 +582,25 @@ Usage: factory cleanup-research [OPTIONS]
 
   A tasks/research/ file is stale when the same filename exists in
   tasks/research-done/ (the completed brief).
+
+  Also runs automatically after every agent execution.
+
+Options:
+  --dry-run  Show what would be cleaned without deleting.
+  --help     Show this message and exit.
+```
+</command>
+
+<command name="factory cleanup-planning" short="Remove stale planning dirs (lifecycle complete)">
+```
+Usage: factory cleanup-planning [OPTIONS]
+
+  Remove stale planning directories whose spec lifecycles have completed.
+
+  A tasks/planning/{name}/ directory is stale when no corresponding file
+  exists in specs/ready/, tasks/building/, tasks/review/, or tasks/verified/.
+  This means the spec was archived or abandoned and the plan artifact is no
+  longer needed.
 
   Also runs automatically after every agent execution.
 

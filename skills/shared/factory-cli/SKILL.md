@@ -71,6 +71,7 @@ Usage: factory [OPTIONS] COMMAND [ARGS]...
     cleanup-specs             Spec pipeline staleness
     cleanup-tasks             tasks/review/ staleness
     cleanup-research          tasks/research/ staleness
+    cleanup-planning          tasks/planning/ staleness
     cleanup-factory-internal  Observation lifecycle
 
 Options:
@@ -81,11 +82,13 @@ Commands:
   apps                      Registered workflow apps and pipelines
   backend                   Switch all agents between kimi and anthropic
   cleanup-factory-internal  Remove promoted/dismissed observations
+  cleanup-planning          Remove stale planning dirs (lifecycle complete)
   cleanup-research          Remove stale research requests (completed)
   cleanup-specs             Remove stale specs (upstream copies)
   cleanup-tasks             Remove stale review tasks (verified/failed)
   decide                    Respond to hard decision gates
   docs                      Update docs after spec completes pipeline
+  fire-drill                Validate failure workflow with synthetic data
   init                      Create workspace directory structure
   init-project              Register cwd as a factory project
   logs                      Recent run logs (per-agent or all)

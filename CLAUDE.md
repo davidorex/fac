@@ -68,5 +68,6 @@ The kernel runs garbage collection after every agent execution:
 - `cleanup-specs`: removes upstream spec copies when downstream exists
 - `cleanup-tasks`: removes tasks/review/ copies when verified/failed exists
 - `cleanup-research`: removes tasks/research/ copies when tasks/research-done/ exists
+- `cleanup-planning`: removes tasks/planning/{name}/ when spec is no longer in ready/building/review/verified
 - `cleanup-decisions`: removes tasks/decisions/ files when spec archived and all entries resolved
 - `cleanup-research-done`: removes tasks/research-done/ briefs when no active specs remain in pipeline
