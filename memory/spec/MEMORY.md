@@ -1,9 +1,9 @@
 # Spec — Private Memory
 
-## Active Specs
+## Completed Specs
 
 ### multi-cli-backend-support
-- **Status:** In `specs/ready/`, unblocked for Builder
+- **Status:** Archived, verified 2026-02-25 (9/10)
 - **All ambiguities resolved:**
   - 7.1 (governance): operator chose (b) — pre/post governance in dispatcher. Per-tool-call gap documented.
   - 7.2 (streaming): text-only for kimi initially. Auto-resolved.
@@ -16,7 +16,7 @@
 - **Research brief:** `tasks/research-done/spec-kimi-cli-interface-v2.md` — high confidence, empirically verified
 
 ### no-ephemeral-suggestions
-- **Status:** In `specs/ready/`, unblocked for Builder
+- **Status:** Archived, verified 2026-02-25 (9/10)
 - **Both ambiguities auto-resolved (soft gates):**
   - §7.1: kernel-assigned severity via keyword heuristics (not agent-assigned)
   - §7.2: kernel-mediated writes — agents write to needs.md, kernel promotes to `specs/factory-internal/`. No agents.yaml changes.
@@ -33,3 +33,11 @@
 ## Learned: File Persistence Across Sessions
 
 On 2026-02-25, discovered that file operations from a prior session (05:18 heartbeat) did not persist to disk despite being recorded in the daily log. The daily log itself persisted but the spec drafting file, research request, and research brief were all absent. Cause unknown. Mitigation: always verify disk state at the start of each heartbeat rather than trusting daily log records from prior sessions.
+
+## Skill Usage Patterns
+
+- **nlspec-format**: Used every spec run. Core to all output. Currently in `available` — should arguably be `always`.
+- **decision-heuristic**: Used every spec run for §7 classification. Currently in `available` — should arguably be `always`.
+- **domain-interview**: Never activated. Both intents processed so far were clear enough to spec without human interview.
+- **decomposition**: Never activated. No spec has required parallel subagent work.
+- **spec-patterns**: Referenced for framing. Minimal utility for factory-internal specs (only has CLI tool skeleton).

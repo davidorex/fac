@@ -1,7 +1,8 @@
 # Operator — Needs & Observations
 
 ## operator-not-monitoring-agent-needs-files
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2104-high-six-agents-builder-verifier-spec-librarian-researc.md
 - created: 2026-02-25T21:01:42Z
 - category: observation
 - blocked: Six agents (builder, verifier, spec, librarian, researcher, reviewer) have active needs.md files with recent entries (Feb 25, 20:48-21:01), but I have not been reading them. My core function is "Report infrastructure friction to factory needs for the human before it blocks work." I cannot report friction I am not observing. Pattern: all other agents write observations to needs.md on every reflection pass; I have never read them.
@@ -13,7 +14,8 @@ Operator should establish a daily practice of reading all agents' needs.md files
 ---
 
 ## operator-no-daily-logs-established
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2104-high-memory-daily-operator-contains-no-log-files-contex.md
 - created: 2026-02-25T21:01:42Z
 - category: observation
 - blocked: memory/daily/operator/ contains no log files. Context-discipline skill specifies writing daily logs as checkpoints and summaries. After the factory has completed 3 infrastructure specs, hello-world-python, and accumulated 19 factory-internal observations, operator has written zero daily logs. Without logs, there is no audit trail of infrastructure issues noticed, decisions made, or patterns observed. Operator cannot checkpoint context mid-analysis or detect if I am drifting in attention across runs.
@@ -25,7 +27,8 @@ Operator should write a daily log entry at the end of each session, capturing: i
 ---
 
 ## operator-factory-internal-observations-not-systematically-triaged
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2104-high-specs-factory-internal-contains-19-observations-fr.md
 - created: 2026-02-25T21:01:42Z
 - category: observation
 - blocked: specs/factory-internal/ contains 19 observations from recent reflection passes. Filesystem shows: 2 "critical" (not found), 3 "high" (2026-02-25T2058-high-*.md, 2026-02-25T2101-high-*.md), remainder "low". My role includes surfacing infrastructure friction, but I have not systematically reviewed these 19 to determine which require human attention, which are auto-resolvable, or what infrastructure improvements they point to.
@@ -37,7 +40,8 @@ Operator should run `factory triage --list` (or equivalent) to surface open fact
 ---
 
 ## operator-decision-file-duplicate-entries
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2104-low-tasks-decisions-multi-cli-backend-support-md-conta.md
 - created: 2026-02-25T21:01:42Z
 - category: observation
 - blocked: tasks/decisions/multi-cli-backend-support.md contains duplicate entries for decisions 7.1, 7.2, and 7.3. For each decision, there is one entry marked "resolved" or "auto-resolved" with a decided answer, and immediately below it is a duplicate entry marked "open" with the same decision ID but without resolution. This creates ambiguity about state and may confuse `factory decide` command if it scans for unresolved entries.
@@ -49,7 +53,8 @@ The decision file should be de-duplicated: keep only the resolved entries (7.1, 
 ---
 
 ## operator-verifier-observation-runtime-code-needs-tests
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2104-high-verifier-surfaced-that-runtime-code-factory-runtim.md
 - created: 2026-02-25T21:01:42Z
 - category: observation
 - blocked: Verifier surfaced that runtime code (factory_runtime/) verification is trace-based (mental code reading), not execution-based. The factory runtime has no test harness — no isolated entry point for testing individual functions, no mock dispatch for backends. This is a structural gap: infrastructure code gets weaker verification than application code. When runtime bugs occur, they will have passed weaker scrutiny than builder-implemented code.
@@ -61,7 +66,8 @@ This is an architectural issue requiring human decision: either (a) build a mini
 ---
 
 ## operator-private-memory-should-be-curated
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2104-high-my-private-memory-md-is-empty-placeholder-only-aft.md
 - created: 2026-02-25T21:01:42Z
 - category: observation
 - blocked: My private MEMORY.md is empty (placeholder only). After this reflection pass, I have observed multiple infrastructure patterns: agent needs.md files, factory-internal observations, decision file issues, missing test harness. These are durable operator insights that should be captured for next session. Without curation, each operator session starts cold.
@@ -73,7 +79,8 @@ At end of operator session, curate MEMORY.md with patterns observed: which agent
 ---
 
 ## operator-available-skills-not-activated
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2104-low-operator-has-6-available-skills-human-action-neede.md
 - created: 2026-02-25T21:01:42Z
 - category: observation
 - blocked: Operator has 6 available skills (human-action-needed, decomposition, nanoclaw-whatsapp, git-workflow, ci-cd, dependency-management, monitoring) that are directly relevant to "keep the lights on" role, but I have never activated any of them. This is architectural: operator should have these loaded at start of each session if they address ongoing monitoring needs. CI/CD, dependency-management, and monitoring directly support infrastructure health checks — core to operator function.
@@ -85,7 +92,8 @@ Consider whether `git-workflow`, `ci-cd`, `dependency-management`, and `monitori
 ---
 
 ## operator-not-reading-projects-directory
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2104-low-operator-can-read-projects-in-can-read-scope-but-h.md
 - created: 2026-02-25T21:01:42Z
 - category: observation
 - blocked: Operator can read `projects/` (in can_read scope), but have not checked for CI/CD pipeline health, dependency updates, or build failures in registered projects. Currently have two projects: hello-world-python and hello-world (placeholder). No monitoring of their health or upstream dependencies is happening.

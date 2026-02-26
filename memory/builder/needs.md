@@ -1,7 +1,8 @@
 # Builder — Needs & Observations
 
 ## builder-empty-private-memory
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2056-low-private-memory-md-has-zero-entries-after-completin.md
 - created: 2026-02-25T20:52:31
 - category: observation
 - blocked: Private MEMORY.md has zero entries after completing 3+ tasks (hello-world-python, multi-cli-backend-support, no-ephemeral-suggestions). Each new builder session starts cold with no curated knowledge. Builder-specific patterns, factory conventions discovered during implementation, and tool quirks (e.g., the `rm` interactive alias) are not being preserved in the builder's own memory — they exist only in shared KNOWLEDGE.md or git history.
@@ -13,7 +14,8 @@ After each task completion, builder should write builder-specific durable knowle
 ---
 
 ## builder-no-daily-logs
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2056-high-memory-daily-builder-contains-no-log-files-the-con.md
 - created: 2026-02-25T20:52:31
 - category: observation
 - blocked: memory/daily/builder/ contains no log files. The context-discipline skill specifies writing checkpoint logs during long tasks and summaries when finishing tasks. After 3 completed tasks, there is no logged session history. When context degrades mid-task or sessions need to resume, there is no prior-state record to recover from.
@@ -25,7 +27,8 @@ Builder should write a daily log entry at task completion — at minimum a one-p
 ---
 
 ## builder-notes-path-inconsistency
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2056-low-two-authoritative-sources-specify-conflicting-path.md
 - created: 2026-02-25T20:52:31
 - category: observation
 - blocked: Two authoritative sources specify conflicting paths for builder-notes files. The `builder/implementation-approach` skill (step 8) says: `tasks/review/{task}/builder-notes.md` (subdirectory per task). The filesystem-conventions KNOWLEDGE.md entry says: `tasks/review/{task-name}.builder-notes.md` (flat file at review/ root). These are structurally different. A builder following the skill would write to a subdirectory; a builder following the naming convention would write a flat file. The verifier will look in one location; the builder may write to the other.
@@ -37,7 +40,8 @@ Align on one canonical path. Recommend the flat-file convention (`tasks/review/{
 ---
 
 ## builder-core-skills-available-not-always
-- status: open
+- status: promoted
+- promoted_to: specs/factory-internal/2026-02-25T2056-high-builder-implementation-approach-and-builder-conver.md
 - created: 2026-02-25T20:52:31
 - category: observation
 - blocked: `builder/implementation-approach` and `builder/convergence` are in the `available` skill list (loaded on demand), not `always`. These are the two skills most central to my job function — one defines the build sequence, the other defines when to stop. Across 3 completed tasks, I have been building without explicitly loading these skills (no record of activation). Context-discipline reasoning for keeping always-loaded list small is valid. But if these skills are not being loaded per-task, I may be implicitly following their guidance from prior context rather than explicitly from skill content — which degrades as context fills.
